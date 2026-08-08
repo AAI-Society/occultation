@@ -229,6 +229,24 @@ pub struct BurstReport {
     pub exhausted: bool,
     pub refill_rate_hz: f64,
     pub burst_rate_hz: f64,
+    /// Restated from `BurstConfig` so `amplification = latency_max /
+    /// online_cost` is auditable from the report's own numbers. Without this
+    /// field the divisor exists only as a two-decimal millisecond figure on
+    /// stderr — nowhere near enough precision to reconcile a division against
+    /// a six-figure amplification, and absent entirely from JSON.
+    #[serde(rename = "online_cost_us", serialize_with = "duration_us::serialize")]
+    pub online_cost: Duration,
+    /// Restated from `BurstConfig` for the same reason: `refill_rate_hz` lets
+    /// a reader invert it, but the actual configured cost should not require
+    /// inversion to check.
+    #[serde(rename = "refill_cost_us", serialize_with = "duration_us::serialize")]
+    pub refill_cost: Duration,
+    /// The observation window `amplification` was peaked over. Restated
+    /// (rather than let a reader reconstruct it as `requests / burst_rate_hz`)
+    /// because that reconstruction is wrong by the rounding in `requests` for
+    /// sub-1-per-second bursts.
+    #[serde(rename = "duration_us", serialize_with = "duration_us::serialize")]
+    pub duration: Duration,
     #[serde(rename = "stall_total_us", serialize_with = "duration_us::serialize")]
     pub stall_total: Duration,
     #[serde(rename = "stall_max_us", serialize_with = "duration_us::serialize")]
@@ -392,6 +410,9 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
         exhausted: stalled > 0,
         refill_rate_hz: refill_rate,
         burst_rate_hz: cfg.burst_rate_hz,
+        online_cost: cfg.online_cost,
+        refill_cost: cfg.refill_cost,
+        duration: cfg.duration,
         stall_total: stalls.iter().sum(),
         stall_max: stalls.iter().copied().max().unwrap_or_default(),
         latency_p50: p50,
@@ -422,6 +443,15 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
 impl BurstReport {
     pub fn render(&self) -> String {
         let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1e3);
+        // Higher resolution than `ms`, deliberately: `online_cost` is
+        // microseconds-scale, and a reader who divides the printed `latency
+        // max` by the printed `idle response` to audit `amplification` must
+        // land on the same figure this tool did. At three decimal places of
+        // milliseconds a ~5.7us online cost prints as "0.006 ms" — one
+        // significant digit — and the audited division comes out 43% off the
+        // real number. Three decimal places of *microseconds* keeps
+        // nanosecond resolution instead.
+        let us = |d: Duration| format!("{:.3} \u{b5}s", d.as_secs_f64() * 1e6);
         let mut out = String::from("Pre-computation pool under burst\n\n");
         out.push_str(&format!(
             "  burst rate           {:.0} presentations/s\n  refill rate          {:.0} items/s\n",
@@ -431,19 +461,26 @@ impl BurstReport {
             "  requests             {}\n  served from pool     {}\n  stalled              {}\n",
             self.requests, self.served_immediately, self.stalled
         ));
-        if self.exhausted {
+        // Keyed off the real pool's own counter as well as the fluid model's
+        // flag: `exhausted` is a property of the fluid approximation, and a
+        // reader trusting only that flag would miss a run where the model
+        // never dipped below 1 item but the discrete pool — refilled once per
+        // integer step — genuinely returned `None` at least once.
+        if self.exhausted || self.pool_exhaustions > 0 {
             out.push_str("\n  POOL EXHAUSTED\n");
         }
         out.push_str(&format!(
             "\n  latency p50          {}\n  latency p95          {}\n  latency p99          {}\n  \
-             latency max          {}\n  amplification        {:.1}x  (peak over this {:.1}s window)\n  \
+             latency max          {}\n  idle response        {}\n  \
+             amplification        {:.1}x  (peak over this {:.1}s window)\n  \
              total stall          {}\n  worst stall          {}\n",
             ms(self.latency_p50),
             ms(self.latency_p95),
             ms(self.latency_p99),
             ms(self.latency_max),
+            us(self.online_cost),
             self.amplification,
-            self.requests as f64 / self.burst_rate_hz,
+            self.duration.as_secs_f64(),
             ms(self.stall_total),
             ms(self.stall_max),
         ));
@@ -463,6 +500,15 @@ impl BurstReport {
              real pool exhaustions              {}\n",
             self.distinct_blinding_factors, self.reuse_events, self.pool_exhaustions
         ));
+        if self.stalled != self.pool_exhaustions as usize {
+            out.push_str(&format!(
+                "  (stalled counts the fluid model's queue; real pool exhaustions counts the\n  \
+                 discrete pool's own None returns — {} vs {} here. They may differ by one at\n  \
+                 the drain boundary, where the fluid level can round to >= 1 while the integer\n  \
+                 pool is already empty; neither is wrong, they are counting different things.)\n",
+                self.stalled, self.pool_exhaustions
+            ));
+        }
         out.push_str(
             "\nOn exhaustion there are two available behaviours. This tool stalls. It does not\n\
              reuse, and reuse is not configurable: two presentations sharing one blinding\n\
@@ -1019,38 +1065,116 @@ mod tests {
     }
 
     /// `simulate_burst` can never actually produce a nonzero `reuse_events`
-    /// (that is the whole point of the pool), so no run through it can catch
-    /// `render` printing a hardcoded `0` instead of `self.reuse_events` —
-    /// every test above would stay green even if the field were ignored.
-    /// Construct a report by hand, with every field `pub` for exactly this
-    /// reason, to pin the rendering wiring independently of the invariant.
+    /// (that is the whole point of the pool), and every real run has
+    /// `distinct_blinding_factors == requests` and (usually) `stalled ==
+    /// pool_exhaustions` — so a run through it cannot catch `render`
+    /// substituting one field for a neighbour, or a literal, anywhere in the
+    /// evidence block. Construct a report by hand, with every field `pub` for
+    /// exactly this reason, giving every numeric field a distinct value that
+    /// cannot be satisfied by any other field or a hardcoded constant, and
+    /// check every line `render` derives from them.
+    ///
+    /// `duration` is deliberately *not* `requests / burst_rate_hz`
+    /// (10 / 4000 = 0.0025s) so a regression back to reconstructing the
+    /// window from those two fields, instead of using `self.duration`
+    /// directly, prints a different number and this test catches it.
     #[test]
-    fn render_prints_the_actual_reuse_count_not_a_hardcoded_zero() {
+    fn render_prints_every_evidence_field_from_the_report() {
         let report = BurstReport {
             requests: 10,
-            served_immediately: 10,
-            stalled: 0,
-            exhausted: false,
+            served_immediately: 6,
+            stalled: 4,
+            exhausted: true,
             refill_rate_hz: 1000.0,
-            burst_rate_hz: 100.0,
-            stall_total: Duration::ZERO,
-            stall_max: Duration::ZERO,
-            latency_p50: Duration::from_micros(50),
-            latency_p95: Duration::from_micros(50),
-            latency_p99: Duration::from_micros(50),
-            latency_max: Duration::from_micros(50),
-            amplification: 1.0,
+            burst_rate_hz: 4000.0,
+            online_cost: Duration::from_micros(50),
+            refill_cost: Duration::from_micros(1_000),
+            duration: Duration::from_millis(500),
+            stall_total: Duration::from_millis(200),
+            stall_max: Duration::from_millis(150),
+            latency_p50: Duration::from_micros(80),
+            latency_p95: Duration::from_micros(90),
+            latency_p99: Duration::from_micros(95),
+            latency_max: Duration::from_micros(100),
+            amplification: 2468.0,
             distinct_blinding_factors: 7,
             reuse_events: 3,
-            pool_exhaustions: 0,
-            overload_factor: 0.1,
-            growth_per_request: 0.0,
-            onset_request: None,
+            pool_exhaustions: 5,
+            overload_factor: 2.75,
+            growth_per_request: 8.25,
+            onset_request: Some(42),
         };
         let out = report.render();
+
+        assert!(
+            out.contains("burst rate           4000 presentations/s"),
+            "{out}"
+        );
+        assert!(out.contains("refill rate          1000 items/s"), "{out}");
+        assert!(out.contains("requests             10"), "{out}");
+        assert!(out.contains("served from pool     6"), "{out}");
+        assert!(out.contains("stalled              4"), "{out}");
+        assert!(out.contains("POOL EXHAUSTED"), "{out}");
+
+        assert!(out.contains("latency p50          0.080 ms"), "{out}");
+        assert!(out.contains("latency p95          0.090 ms"), "{out}");
+        assert!(out.contains("latency p99          0.095 ms"), "{out}");
+        assert!(out.contains("latency max          0.100 ms"), "{out}");
+        assert!(
+            out.contains("idle response        50.000 \u{b5}s"),
+            "the idle response (online_cost) must be printed so amplification is auditable: {out}"
+        );
+        assert!(
+            out.contains("amplification        2468.0x  (peak over this 0.5s window)"),
+            "amplification must print the report's own value and window, not a recomputed one: {out}"
+        );
+        assert!(out.contains("total stall          200.000 ms"), "{out}");
+        assert!(out.contains("worst stall          150.000 ms"), "{out}");
+
+        assert!(out.contains("overload factor      2.75x"), "{out}");
+        assert!(out.contains("growth per request   8.25x"), "{out}");
+        assert!(out.contains("onset request        42"), "{out}");
+
+        assert!(
+            out.contains("distinct blinding factors issued   7"),
+            "{out}"
+        );
         assert!(
             out.contains("blinding-factor reuse events       3"),
             "render must print the actual reuse_events field, not a hardcoded zero: {out}"
+        );
+        assert!(
+            out.contains("real pool exhaustions              5"),
+            "render must print the actual pool_exhaustions field, not stalled or a literal: {out}"
+        );
+        // stalled (4) != pool_exhaustions (5) here, so the explanatory clause
+        // about the two counters diverging at the drain boundary must appear.
+        assert!(
+            out.contains("stalled counts the fluid model's queue"),
+            "{out}"
+        );
+    }
+
+    /// `amplification` is stored, not recomputed by `render`, but the whole
+    /// point of restating `online_cost` and `latency_max` in the report is
+    /// that a reader can redo the division themselves. Pin that the two
+    /// numbers the report now carries actually reconcile against it.
+    #[test]
+    fn amplification_reconciles_against_the_reported_idle_response() {
+        let cfg = BurstConfig {
+            capacity: 32,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 4_000.0,
+            duration: Duration::from_secs(2),
+            seed: 7,
+        };
+        let r = simulate_burst(&cfg).unwrap();
+        let recomputed = r.latency_max.as_secs_f64() / r.online_cost.as_secs_f64();
+        assert!(
+            (recomputed - r.amplification).abs() < 1e-6,
+            "latency_max / online_cost = {recomputed}, but amplification = {}",
+            r.amplification
         );
     }
 }

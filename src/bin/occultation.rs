@@ -188,7 +188,19 @@ fn run() -> Result<ExitCode> {
             let report = occultation::pool::simulate_burst(&cfg)?;
             match format {
                 Format::Table => println!("{}", report.render()),
-                Format::Json => println!("{}", serde_json::to_string_pretty(&report.to_json())?),
+                Format::Json => {
+                    // The table's cost provenance ("given" vs "measured on
+                    // this host") only ever reached stderr. JSON consumers
+                    // read stdout alone, so without this they see the
+                    // resulting `refill_cost_us`/`online_cost_us` figures but
+                    // never learn whether those were supplied or measured.
+                    let mut v = report.to_json();
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("refill_cost_given".to_string(), refill_given.into());
+                        obj.insert("online_cost_given".to_string(), online_given.into());
+                    }
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                }
             }
             if let Some(limit) = max_stall {
                 if report.stall_max > limit.into() {
