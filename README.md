@@ -59,13 +59,15 @@ figures untagged, with one exception: `pool`'s `--online` default, when the
 operator does not supply one, is the identical crude estimate as `bench
 --composed`'s `ESTIMATED` row (two hash-to-scalar operations — not a
 measurement of a pooled presentation's online phase), and `pool` says so on
-stderr and in `--format json`'s `online_cost_origin` field (`"given"`,
-`"measured"` or `"estimated"`). Everything else about `pool` and
-`anonymity` is a plain measurement or a plain partition and needs no tag:
-`pool`'s `--refill` default, unlike `--online`, is a real measurement (one
-presentation's group work), and `anonymity`'s figures are arithmetic over
-the fleet file you gave it. Tagging those would say nothing a reader
-doesn't already know from the command that produced them.
+stderr and in `--format json`'s `online_cost_origin` field (`"given"` or
+`"estimated"` — never `"measured"`: nothing measures that phase yet).
+Everything else about `pool` and `anonymity` is a plain measurement or a
+plain partition and needs no tag: `pool`'s `--refill` default, unlike
+`--online`, is a real measurement (one presentation's group work), recorded
+in `--format json`'s `refill_cost_origin` field (`"given"` or `"measured"`
+— never `"estimated"`), and `anonymity`'s figures are arithmetic over the
+fleet file you gave it. Tagging those would say nothing a reader doesn't
+already know from the command that produced them.
 
 ## Commands
 
