@@ -18,8 +18,8 @@ measured here
       excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it
   cached pairings only                              0.54 ms    0.69 ms    1.23 ms  fits, 13.77 ms spare
       excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it
-  pool (ESTIMATED) + cached pairings                0.00 ms    0.69 ms    0.70 ms  fits, 14.30 ms spare
-      excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it
+  pool (ESTIMATED) + cached pairings                0.00 ms    0.69 ms    0.69 ms  fits, 14.31 ms spare
+      The pooled presentation here is a crude estimate, not a measurement, and it is almost certainly too low: it implies a 99% reduction where the desk study's own pooled figure implies 80%. It also excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it.
 
 Measured and published figures differ: the composed path is 14x cheaper
 here than the desk study's figures imply. The composition error is unaffected —

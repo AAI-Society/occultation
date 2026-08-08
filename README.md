@@ -45,14 +45,20 @@ pre-computation pool, the anonymity-set calculator, and the timing harness.
 
 ## Where the numbers come from
 
-Every figure the tool prints is tagged, and no number is untagged. `measured
-here (n=…)` was timed on the host that produced the output. `PUBLISHED — …`
-was read from a publication and was **not** measured on this stack; the
-citation is printed with it. `bench --composed` has a third tag, `ESTIMATED`,
-for exactly one row — the pooled presentation is not measured by `bench`
-itself, so that row is derived from a cheaper proxy and says so in its own
-note and in its `origin.kind` in `--format json`. `occultation pool` measures
-the real thing instead of estimating it.
+Every figure `bench` prints is tagged. `measured here (n=…)` was timed on the
+host that produced the output. `PUBLISHED — …` was read from a publication and
+was **not** measured on this stack; the citation is printed with it.
+`bench --composed` has a third tag, `ESTIMATED`, for exactly one row: nothing
+in this tool measures a pooled presentation's online phase directly yet
+(`occultation pool` included — see `pool`'s `--online` default, which is this
+same estimate), so that row is derived from a cheaper proxy instead, and says
+so in its own note and in its `origin.kind` in `--format json`.
+
+This tagging scheme is `bench`'s. `pool` and `anonymity` print their own
+figures untagged: nothing about them is published or estimated, they are a
+plain measurement of a burst simulation and a plain partition of the fleet
+file you gave them, and tagging would say nothing a reader doesn't already
+know from the command that produced them.
 
 ## Commands
 

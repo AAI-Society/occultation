@@ -1,5 +1,5 @@
 {
-  "baseline_round_trip_us": 25.375,
+  "baseline_round_trip_us": 25.415999999999997,
   "budget_us": 15000.0,
   "desk_study": [
     {
@@ -28,6 +28,7 @@
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "naive (no pool, no cached pairings)",
       "note": "13.8 ms and 4.2 ms were each assessed separately against the 15 ms budget and each looked acceptable.",
       "origin": {
@@ -61,6 +62,7 @@
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "cached pairings only",
       "note": "Under the limit with 100 us to spare, which leaves nothing for application work, network time or evidence writing.",
       "origin": {
@@ -94,6 +96,7 @@
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "pre-computation pool + cached pairings",
       "note": "The only composition that fits. Pre-computation is load-bearing, not an optimization.",
       "origin": {
@@ -110,25 +113,26 @@
           "secs": 0
         },
         "present": {
-          "nanos": 547875,
+          "nanos": 547916,
           "secs": 0
         },
         "total": {
-          "nanos": 1316958,
+          "nanos": 1316791,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 13683042,
+            "nanos": 13683209,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 769083,
+          "nanos": 768875,
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "naive (no pool, no cached pairings)",
       "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
       "origin": {
@@ -142,25 +146,26 @@
           "secs": 0
         },
         "present": {
-          "nanos": 547875,
+          "nanos": 547916,
           "secs": 0
         },
         "total": {
-          "nanos": 1236000,
+          "nanos": 1236457,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 13764000,
+            "nanos": 13763543,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 688125,
+          "nanos": 688541,
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "cached pairings only",
       "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
       "origin": {
@@ -174,32 +179,33 @@
           "secs": 0
         },
         "present": {
-          "nanos": 4332,
+          "nanos": 4250,
           "secs": 0
         },
         "total": {
-          "nanos": 692457,
+          "nanos": 692791,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 14307543,
+            "nanos": 14307209,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 688125,
+          "nanos": 688541,
           "secs": 0
         }
       },
+      "includes_modelled": false,
       "label": "pool (ESTIMATED) + cached pairings",
-      "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
+      "note": "The pooled presentation here is a crude estimate, not a measurement, and it is almost certainly too low: it implies a 99% reduction where the desk study's own pooled figure implies 80%. It also excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it.",
       "origin": {
-        "basis": "two hash-to-scalar operations; `occultation pool` measures it properly",
+        "basis": "two hash-to-scalar operations; nothing in this tool measures a pooled presentation's online phase directly yet, `occultation pool` included, whose default online cost is this same estimate",
         "kind": "estimated"
       }
     }
   ],
-  "measured_ratio_to_baseline": 51.89982266009852
+  "measured_ratio_to_baseline": 51.80952943028014
 }

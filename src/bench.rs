@@ -24,9 +24,13 @@ pub struct BenchOptions {
     /// How many of them a presentation discloses.
     pub disclose: usize,
     pub allow_modelled: bool,
-    /// Include the modelled escrow tag in the composed presentation cost.
-    /// Requires `allow_modelled`; the CLI enforces that before this struct is
-    /// built.
+    /// Whether the operator asked to include the modelled escrow tag in the
+    /// composed presentation cost. `run_bench` enforces that this requires
+    /// `allow_modelled` (see its first lines) — the same refusal the CLI's
+    /// own guard gives, so the check holds for library callers too, not only
+    /// callers that go through the binary. Folding the measured tag into a
+    /// composed report is done separately, by `composed_report_with`, which
+    /// takes the tag directly rather than reading this field.
     pub with_escrow: bool,
 }
 
@@ -100,6 +104,17 @@ pub fn run_bench(opts: &BenchOptions) -> Result<PrimitiveCosts, BenchError> {
             disclose: opts.disclose,
             attributes: opts.attributes,
         });
+    }
+    // Wired, not merely carried: a library caller who asks for the escrow tag
+    // (`with_escrow`) without accepting what it is (`allow_modelled`) gets the
+    // same refusal the CLI's own guard gives, rather than having the field
+    // read by nothing and the request silently ignored. This does not by
+    // itself fold the tag into a composed cost — that is
+    // `composed_report_with`, which takes the measured tag directly — but it
+    // makes `with_escrow` mean something even to a caller that never goes
+    // through the CLI.
+    if opts.with_escrow {
+        ModelledPermit::from_flag(opts.allow_modelled)?;
     }
 
     let baseline = measure_baseline(opts.seed, opts.iters)?;
@@ -379,6 +394,14 @@ pub struct ComposedRow {
     pub composed: Composed,
     pub origin: RowOrigin,
     pub note: Option<String>,
+    /// Whether a modelled component's cost was folded into `composed`.
+    /// `origin` alone cannot say this: a row with the escrow tag folded in is
+    /// still `RowOrigin::MeasuredHere` for the BBS+ halves it also carries,
+    /// so a JSON consumer filtering on `origin.kind` would otherwise see a
+    /// clean measured row even though a third of its `present` figure came
+    /// from a stub. Only the label's `+ MODELLED escrow tag` suffix said so
+    /// before this field existed.
+    pub includes_modelled: bool,
 }
 
 #[derive(Debug)]
@@ -407,6 +430,7 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
                  15 ms budget and each looked acceptable."
                     .into(),
             ),
+            includes_modelled: false,
         },
         ComposedRow {
             label: "cached pairings only".into(),
@@ -419,6 +443,7 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
                  application work, network time or evidence writing."
                     .into(),
             ),
+            includes_modelled: false,
         },
         ComposedRow {
             label: "pre-computation pool + cached pairings".into(),
@@ -431,14 +456,20 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
                  not an optimization."
                     .into(),
             ),
+            includes_modelled: false,
         },
     ];
 
     let (present, verify_uncached, verify_cached) = costs.composed_halves();
     // A pooled presentation removes the group operations from the online path,
-    // leaving the challenge hash and the field-arithmetic responses. Task 9
-    // measures that directly; here it is the presentation minus its group
-    // work, approximated by the hash cost, and labelled as an estimate.
+    // leaving the challenge hash and the field-arithmetic responses. No
+    // command in this tool measures that online phase directly: here it is
+    // the presentation minus its group work, approximated by the hash cost,
+    // and labelled as an estimate. `occultation pool` does not measure it
+    // either — its `--online` cost is either supplied by the operator or
+    // defaults to this identical estimate (see `main`'s `online_cost`
+    // default), so it is not an independent, more-real source to contrast
+    // this row against.
     let pooled_estimate = costs.hash_to_scalar.median * 2;
     let measured = vec![
         ComposedRow {
@@ -446,18 +477,22 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
             composed: compose(present, verify_uncached),
             origin: RowOrigin::MeasuredHere,
             note: None,
+            includes_modelled: false,
         },
         ComposedRow {
             label: "cached pairings only".into(),
             composed: compose(present, verify_cached),
             origin: RowOrigin::MeasuredHere,
             note: None,
+            includes_modelled: false,
         },
         ComposedRow {
             label: "pool (ESTIMATED) + cached pairings".into(),
             composed: compose(pooled_estimate, verify_cached),
             origin: RowOrigin::Estimated {
-                basis: "two hash-to-scalar operations; `occultation pool` measures it properly",
+                basis: "two hash-to-scalar operations; nothing in this tool measures a pooled \
+                        presentation's online phase directly yet, `occultation pool` included, \
+                        whose default online cost is this same estimate",
             },
             note: Some(
                 "The pooled presentation here is a crude estimate, not a measurement, \
@@ -465,6 +500,7 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
                  the desk study's own pooled figure implies 80%."
                     .into(),
             ),
+            includes_modelled: false,
         },
     ];
 
@@ -496,15 +532,37 @@ pub fn composed_report_with(
             for row in &mut report.measured {
                 row.composed = compose(row.composed.present + tag, row.composed.verify);
                 row.label = format!("{} + MODELLED escrow tag", row.label);
+                // `origin` stays `MeasuredHere` (or `Estimated`) for the BBS+
+                // halves the row also carries, so it alone cannot say a stub's
+                // cost is folded in; a JSON consumer filtering on
+                // `origin.kind` needs this to notice.
+                row.includes_modelled = true;
             }
+            // `measured_ratio` was computed by `composed_report` against the
+            // pre-escrow total. Recompute it here so the rendered "Composed
+            // BBS+ costs Nx" headline agrees with the rows above it instead
+            // of quietly citing a ratio from before the escrow tag was added.
+            report.measured_ratio = if report.baseline_round_trip.is_zero() {
+                f64::NAN
+            } else {
+                report.measured[0].composed.total.as_secs_f64()
+                    / report.baseline_round_trip.as_secs_f64()
+            };
         }
         None => {
             for row in &mut report.measured {
-                row.note = Some(
-                    "excludes the escrow tag, which is modelled; the desk study \
-                     attributes 4.6 ms (33%) of presentation to it"
-                        .into(),
-                );
+                // Append, never replace. The estimated pooled row's note is the
+                // only place a table reader learns its figure is a crude proxy
+                // that is almost certainly too low — the renderer does not
+                // print `origin.basis` — and overwriting it here silently
+                // stripped that caveat from every CLI run of the command the
+                // paper cites.
+                let escrow = "excludes the escrow tag, which is modelled; the desk study \
+                              attributes 4.6 ms (33%) of presentation to it";
+                row.note = Some(match row.note.take() {
+                    Some(existing) => format!("{existing} It also {escrow}."),
+                    None => escrow.to_string(),
+                });
             }
         }
     }
@@ -606,6 +664,7 @@ impl ComposedReport {
                         "origin": r.origin,
                         "composed": r.composed,
                         "note": r.note,
+                        "includes_modelled": r.includes_modelled,
                     })
                 })
                 .collect::<Vec<_>>()
