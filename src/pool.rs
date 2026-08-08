@@ -223,6 +223,14 @@ mod duration_us {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BurstReport {
+    /// Restated from `BurstConfig` so the pool size a paper or reader quotes
+    /// alongside these figures comes from the report itself rather than
+    /// being copied out of the command line that produced it.
+    pub capacity: usize,
+    /// Restated from `BurstConfig` for the same reason as `capacity`: this
+    /// run's determinism rests on this value, and it should be auditable
+    /// from the JSON rather than only from the invocation.
+    pub seed: u64,
     pub requests: usize,
     pub served_immediately: usize,
     pub stalled: usize,
@@ -404,6 +412,8 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     let latency_max = latencies.last().copied().unwrap_or_default();
 
     Ok(BurstReport {
+        capacity: cfg.capacity,
+        seed: cfg.seed,
         requests,
         served_immediately,
         stalled,
@@ -1081,6 +1091,8 @@ mod tests {
     #[test]
     fn render_prints_every_evidence_field_from_the_report() {
         let report = BurstReport {
+            capacity: 17,
+            seed: 99,
             requests: 10,
             served_immediately: 6,
             stalled: 4,

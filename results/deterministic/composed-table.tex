@@ -4,7 +4,7 @@
 % under deterministic/ and is diffed by CI. Do not hand-edit.
 \begin{table}[h]
 \centering\small
-\begin{tabular}{lrrrl}
+\begin{tabular}{>{\raggedright\arraybackslash}p{4.3cm}rrr>{\raggedright\arraybackslash}p{3.7cm}}
 \toprule
 Composition & Present & Verify & Total & Verdict \\
 \midrule
@@ -13,6 +13,6 @@ cached pairings only & 13.80\,ms & 1.10\,ms & 14.90\,ms & MARGINAL --- 0.10\,ms 
 pre-computation pool + cached pairings & 2.80\,ms & 1.10\,ms & 3.90\,ms & fits, 11.10\,ms spare \\
 \bottomrule
 \end{tabular}
-\caption{The composed present-and-verify path against the 15.00\,ms budget: the desk study's published figures for presentation and verification, assessed together rather than separately as the desk study assessed them. The naive composition sums to 18.00\,ms and misses the budget by 3.00\,ms even though each half alone appeared to fit. Caching pairings brings the sum to 14.90\,ms, 0.10\,ms under the limit --- not headroom, hence \texttt{MARGINAL} rather than a pass. Only the pre-computation pool, combined with cached pairings, fits with room to spare: 3.90\,ms total, 11.10\,ms of headroom. \texttt{results/measured/composed.txt} reports the profile measured on this host, which diverges from these published figures by roughly an order of magnitude without changing the correction, which is an error in arithmetic, not in hardware.}
+\caption{The composed present-and-verify path against the 15.00\,ms budget: the desk study's published figures for presentation and verification, assessed together rather than separately as the desk study assessed them. The naive composition sums to 18.00\,ms and misses the budget by 3.00\,ms even though each half alone appeared to fit. Caching pairings brings the sum to 14.90\,ms, 0.10\,ms under the limit --- not headroom, hence \texttt{MARGINAL} rather than a pass. Only the pre-computation pool, combined with cached pairings, fits with room to spare: 3.90\,ms total, 11.10\,ms of headroom. \texttt{results/\allowbreak measured/\allowbreak composed.txt} reports the profile measured on this host, which diverges from these published figures by roughly an order of magnitude without changing the correction, which is an error in arithmetic, not in hardware.}
 \label{tab:composed}
 \end{table}

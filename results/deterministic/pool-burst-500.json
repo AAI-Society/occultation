@@ -1,6 +1,7 @@
 {
   "amplification": 1.0,
   "burst_rate_hz": 500.0,
+  "capacity": 64,
   "distinct_blinding_factors": 1000,
   "duration_us": 2000000.0,
   "exhausted": false,
@@ -19,6 +20,7 @@
   "refill_rate_hz": 1428.5714285714287,
   "requests": 1000,
   "reuse_events": 0,
+  "seed": 7,
   "served_immediately": 1000,
   "stall_max_us": 0.0,
   "stall_total_us": 0.0,

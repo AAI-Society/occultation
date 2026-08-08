@@ -166,7 +166,7 @@ hosts, after six weeks of ordinary operational drift in patch level and
 microcode, partition into \anonconfigs{} distinguishable groups of
 \anonsizes{} --- \anonsingletons{} host alone on its configuration before
 any credential is even presented. Effective set size \anoneffectiveset{} of
-\anonfleetsize{}; entropy \anonentropy{}. Two of the four layers this paper's
+\anonfleetsize{}; entropy \anonentropy{}. Two of the five layers this paper's
 subject construction proposes --- hardware attestation and threshold escrow
 --- are implemented here only as cost-representative stubs with no security
 whatsoever, and every number that touches them says so in the sentence that
@@ -212,11 +212,11 @@ matter of omitting a field from a record. It requires a credential layer
 whose presentations do not link to each other, sitting underneath a log
 layer built, by design, to chain everything together.
 
-A desk study assembled a concrete four-layer answer --- hardware
-attestation, an anonymous credential, an evidence log, and a threshold
-escrow for accountability --- and estimated what it would cost, using
-published benchmarks of other people's hardware rather than measuring
-anything. The estimate contained an arithmetic error large enough to flip
+A desk study assembled a concrete five-layer answer --- hardware
+attestation, an anonymous credential, an evidence log, a threshold escrow
+for accountability, and a transport layer --- and estimated what it would
+cost, using published benchmarks of other people's hardware rather than
+measuring anything. The estimate contained an arithmetic error large enough to flip
 its own headline conclusion, and finding that error is most of what this
 paper is about. The desk study assessed presentation and verification
 against the standard's \deskbudget{} per-action budget
@@ -313,13 +313,14 @@ the thing standing between the design and its own latency budget.
 \section{The Construction We Measured}
 \label{sec:construction}
 
-The desk study's construction has four layers.
+The desk study's construction has five layers.
 
 \begin{table}[h]
 \centering\small
-\caption{The four-layer construction P05 proposes. \occultation{} measures
-or models the first two rows; the evidence log and transport layers are out
-of scope for this paper (Section~\ref{sec:open}).}
+\caption{The five-layer construction P05 proposes. \occultation{} measures
+or models rows 1, 2 and 4 (hardware attestation, agent credential,
+accountability); the evidence-log and transport rows are out of scope for
+this paper (Section~\ref{sec:open}).}
 \label{tab:layers}
 \begin{tabular}{@{}p{2.6cm}p{5.0cm}p{5.4cm}@{}}
 \toprule
@@ -340,20 +341,21 @@ global action sequence \\
 Accountability & $k$-of-$n$ threshold ElGamal escrow tag with a NIZK that the
 tag encrypts the credential-bound identity & a rogue escrow node unmasking
 unilaterally \\
+\addlinespace
+Transport & OHTTP relay + padding & a network observer linking sessions by
+IP and timing \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Not all four layers are implemented, and none of the three that are touched
+Not all five layers are implemented, and none of the three that are touched
 here are implemented to the same standard. Table~\ref{tab:boundary} states
 the boundary exactly, and it is required to match \occultation{}'s
-\texttt{README.md} member for member, because the twelve reviews behind this
-codebase converged on one recurring defect: the tool, or an earlier draft of
-its documentation, asserting something its own numbers did not support.
-Three of those findings survived to a fix commit; not all of them were about
-a modelled component specifically, which is exactly why the boundary this
-table states has to be checked here rather than assumed from the fact that
-Table~\ref{tab:layers} names a stub.
+\texttt{README.md} member for member: a paper's own claim about what it
+measures or models should be checked against the tool's documentation
+directly rather than assumed from the fact that Table~\ref{tab:layers} names
+a stub, because not every gap between a claim and the code behind it is
+about a modelled component specifically.
 
 \begin{table}[h]
 \centering\small
@@ -393,11 +395,13 @@ security. \\
 \end{tabular}
 \end{table}
 
-The two rows that matter most for what follows are the first two. Every
-figure in Section~\ref{sec:results} that is not explicitly labelled
-\texttt{MODELLED} rests on real BLS12-381 pairing arithmetic and a real BBS+
-implementation, timed on real hardware. Every figure that touches ECDAA or
-threshold escrow is a cost estimate from a stub with no cryptographic
+Three of these five rows are what the rest of this paper touches: hardware
+attestation, the agent credential, and accountability. Every figure in
+Section~\ref{sec:results} that is not explicitly labelled \texttt{MODELLED}
+rests on real BLS12-381 pairing arithmetic and a real BBS+ implementation,
+timed on real hardware --- that is the agent-credential row. Every figure
+that touches ECDAA or threshold escrow --- the hardware-attestation and
+accountability rows --- is a cost estimate from a stub with no cryptographic
 content, and this paper does not use either stub to support any claim about
 security --- only, where unavoidable, about cost, and always labelled.
 
@@ -414,10 +418,12 @@ guarantee this paper has not evaluated. Building and asserting the security
 of a real threshold-opening path is future work, not something a
 cost-measurement tool should attempt as a side effect.
 
-The evidence-log and transport layers in Table~\ref{tab:layers} are not
-implemented at all. They are P05's open questions 1 and 2
-(Section~\ref{sec:open}), and nothing in this paper's measurements bears on
-them.
+The evidence-log layer in Table~\ref{tab:layers} is not implemented at all;
+it is P05's open questions 1 and 2 (Section~\ref{sec:open}), and nothing in
+this paper's measurements bears on it. The transport layer in
+Table~\ref{tab:layers} is likewise not implemented, but it is a separate,
+untouched omission rather than one of those two open questions;
+Section~\ref{sec:open} names it on its own.
 
 % ================================================================
 \section{Measuring the Composed Path}
@@ -432,7 +438,7 @@ judges the sum --- never a half --- against the \deskbudget{}
 budget defined once, in \texttt{src/cost.rs}, as the single source of truth
 every command reads. A verdict is one of three values, not two:
 \texttt{Fits}, \texttt{Misses}, or --- the variant that earns its place ---
-\texttt{Marginal}, for a composition that is under budget by less than
+\texttt{Marginal}, for a composition that is under budget by no more than
 5\,\% of it. Without that third value, \desktotalcached{} against a
 \deskbudget{} budget reports as a pass, which is exactly the
 desk study's own conclusion about its cached-pairing figure and exactly the
@@ -461,10 +467,11 @@ exercises the pool under load (Section~\ref{sec:pool}), does not close this
 gap either: its \texttt{--online} cost defaults to this identical estimate
 when the operator does not supply one. So the estimate and the pool
 simulation are not independent evidence for each other, and the row's own
-note says the estimate is almost certainly too low --- it implies a 99\,\%
-reduction in presentation cost where the desk study's own pooled figure
-implies 80\,\%. We report it because omitting the row would leave the
-measured profile's pooled composition entirely unstated, and a caveated
+note says the estimate is almost certainly too low --- it implies a
+\pooledreductionpct{} reduction in presentation cost where the desk study's
+own pooled figure implies \deskpooledreductionpct{}. We report it because
+omitting the row would leave the measured profile's pooled composition
+entirely unstated, and a caveated
 estimate is more honest than a silent gap. It is not a claim that we have
 measured a pooled presentation, and no number in this paper should be read
 as one.
@@ -475,16 +482,16 @@ as one.
 
 Every table and every inline figure in this section is generated by
 \texttt{scripts/\allowbreak regen-results.sh} from files under
-\texttt{../results/} and \texttt{\textbackslash{}input}\allowbreak{}ed or
+\texttt{../results/} and \texttt{\textbackslash{}input}-ed or
 substituted as a \LaTeX{} macro; none of it is typed here by hand. Files
 under \texttt{results/deterministic/} are arithmetic over the desk study's
-published constants, a seeded pool simulation, or a partition of a fixed
-fleet file, so they reproduce byte-for-byte on any host and continuous
-integration fails the build on a diff. Files under \texttt{results/measured/}
-are wall-clock timing, differ by host, and are not diffed for that reason;
-every number drawn from them is marked as measured, either in its own table
-or, for \texttt{composed-facts.tex} and \texttt{pool-facts.tex}'s siblings,
-in the prose that cites it.
+published constants, a seeded pool simulation (including
+\texttt{pool-facts.tex}), or a partition of a fixed fleet file, so they
+reproduce byte-for-byte on any host and continuous integration fails the
+build on a diff. Files under \texttt{results/measured/} are wall-clock
+timing, differ by host, and are not diffed for that reason; every number
+drawn from them is marked as measured, either in its own table or, for
+\texttt{composed-facts.tex}, in the prose that cites it.
 
 \subsection{The composed path, corrected}
 \label{sec:results-composed}
@@ -531,9 +538,10 @@ away.
 Section~\ref{sec:pool} argues that the pre-computation pool's soundness,
 not its speed, is the question the correction above actually raises. The
 numbers behind that argument, from the shipped burst configuration
-(capacity 64, refill \poolrefillcostsi{}, online \poolonlinecostsi{},
-burst rate \poolburstratesi{}, seed 7 --- the same configuration
-\texttt{tests/acceptance.rs}'s acceptance test~2 exercises) are: of
+(capacity \poolcapacity{}, refill \poolrefillcostsi{}, online
+\poolonlinecostsi{}, burst rate \poolburstratesi{}, seed \poolseed{} ---
+the same configuration \texttt{tests/acceptance.rs}'s acceptance test~2
+exercises) are: of
 \poolrequests{} requests over a \poolwindow{} window, \poolserved{} were
 served immediately and \poolstalled{} stalled. The worst response was
 \poolamplification{}$\times$ an idle one. That figure is a peak over the

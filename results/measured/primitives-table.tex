@@ -11,13 +11,13 @@ Operation & Cost & P95 & $\times$Ed25519 & Provenance \\
 Ed25519 sign & 0.007\,ms & 0.007\,ms & 0.3 & measured here (n=200) \\
 Ed25519 verify & 0.018\,ms & 0.018\,ms & 0.7 & measured here (n=200) \\
 Ed25519 sign + verify (baseline) & 0.025\,ms & -- & 1.0 & measured here (n=200) \\
-G1 scalar multiplication & 0.039\,ms & 0.040\,ms & 1.6 & measured here (n=200) \\
+G1 scalar multiplication & 0.040\,ms & 0.040\,ms & 1.6 & measured here (n=200) \\
 hash\_to\_scalar & 0.002\,ms & 0.002\,ms & 0.1 & measured here (n=200) \\
-BBS+ sign (issuer) & 0.209\,ms & 0.237\,ms & 8.3 & measured here (n=200) \\
-BBS+ signature verify (holder) & 0.648\,ms & 0.700\,ms & 25.6 & measured here (n=200) \\
-BBS+ presentation & 0.543\,ms & 0.593\,ms & 21.4 & measured here (n=200) \\
-BBS+ proof verify & 0.770\,ms & 0.799\,ms & 30.4 & measured here (n=200) \\
-BBS+ proof verify, cached pairings & 0.692\,ms & 0.718\,ms & 27.3 & measured here (n=200) \\
+BBS+ sign (issuer) & 0.212\,ms & 0.233\,ms & 8.3 & measured here (n=200) \\
+BBS+ signature verify (holder) & 0.652\,ms & 0.708\,ms & 25.6 & measured here (n=200) \\
+BBS+ presentation & 0.544\,ms & 0.601\,ms & 21.4 & measured here (n=200) \\
+BBS+ proof verify & 0.771\,ms & 0.799\,ms & 30.3 & measured here (n=200) \\
+BBS+ proof verify, cached pairings & 0.689\,ms & 0.721\,ms & 27.1 & measured here (n=200) \\
 \bottomrule
 \end{tabular}
 \caption{Primitive costs measured on this host against an Ed25519 sign-and-verify round trip. ECDAA and threshold escrow are omitted: they are modelled stubs and this table is generated from a plain \texttt{occultation bench} run, which never executes a modelled component. See \texttt{results/measured/HEADER.txt} for the exact host and toolchain.}

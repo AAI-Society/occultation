@@ -1,5 +1,5 @@
 {
-  "baseline_round_trip_us": 25.375,
+  "baseline_round_trip_us": 25.417,
   "budget_us": 15000.0,
   "desk_study": [
     {
@@ -113,22 +113,22 @@
           "secs": 0
         },
         "present": {
-          "nanos": 545375,
+          "nanos": 543500,
           "secs": 0
         },
         "total": {
-          "nanos": 1316417,
+          "nanos": 1318333,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 13683583,
+            "nanos": 13681667,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 771042,
+          "nanos": 774833,
           "secs": 0
         }
       },
@@ -146,22 +146,22 @@
           "secs": 0
         },
         "present": {
-          "nanos": 545375,
+          "nanos": 543500,
           "secs": 0
         },
         "total": {
-          "nanos": 1232750,
+          "nanos": 1234208,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 13767250,
+            "nanos": 13765792,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 687375,
+          "nanos": 690708,
           "secs": 0
         }
       },
@@ -179,22 +179,22 @@
           "secs": 0
         },
         "present": {
-          "nanos": 4250,
+          "nanos": 4334,
           "secs": 0
         },
         "total": {
-          "nanos": 691625,
+          "nanos": 695042,
           "secs": 0
         },
         "verdict": {
           "headroom": {
-            "nanos": 14308375,
+            "nanos": 14304958,
             "secs": 0
           },
           "verdict": "fits"
         },
         "verify": {
-          "nanos": 687375,
+          "nanos": 690708,
           "secs": 0
         }
       },
@@ -207,5 +207,5 @@
       }
     }
   ],
-  "measured_ratio_to_baseline": 51.87850246305419
+  "measured_ratio_to_baseline": 51.868159106110085
 }
