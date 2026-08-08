@@ -45,6 +45,57 @@ host that produced the output. `PUBLISHED — …` was read from a publication a
 was **not** measured on this stack; the citation is printed with it. There is
 no third state and no untagged number.
 
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `occultation bench` | primitive costs against the Ed25519 baseline |
+| `occultation bench --composed` | presentation **and** verification against the 15 ms budget |
+| `occultation pool --burst <rate>` | the pre-computation pool under load |
+| `occultation anonymity --fleet <f.toml>` | anonymity set size given TCB diversity |
+
+Exit codes: `0` success, `1` policy violation (`--min-set`, `--max-stall`),
+`2` bad input, `3` a modelled component was requested without
+`--allow-modelled`.
+
+## Two things this tool exists to say
+
+**The naive construction does not fit the latency budget.** The desk study
+assessed BBS+ presentation (~13.8 ms) and verification (~4.2 ms) separately
+against a 15 ms budget and found each acceptable. Their sum is 18 ms. With
+cached pairings it is 14.9 ms — under the limit with 100 microseconds to
+spare, which leaves nothing for the application, the network, or writing
+evidence. `bench --composed` reproduces this. Pre-computation is load-bearing,
+not an optimization.
+
+Measured on modern hardware the absolute figures are roughly an order of
+magnitude smaller, and the tool prints those beside the published ones with
+the divergence stated. The correction stands regardless: it is an error in
+arithmetic, not in hardware.
+
+**Pool exhaustion has exactly two available behaviours and one of them is
+catastrophic.** This tool stalls. It never reuses, and reuse is not
+configurable. Two presentations sharing one blinding factor are linkable on
+sight, and anyone who sees both transcripts recovers the signature scalar and
+every undisclosed attribute by subtraction — the repository contains a test
+that performs the extraction. Stalling is not free either: `pool` reports the
+amplification factor, which is how much of an agent's load an observer can
+read off its response latency.
+
+## Benchmarks: two of them, on purpose
+
+`occultation bench` is the artifact the paper cites: one process, seeded RNG,
+median-of-n, output committed under `results/`. `cargo bench` runs criterion
+microbenchmarks for developers optimizing the code. They will not agree
+exactly and are not meant to.
+
+## Reproducing
+
+```bash
+cargo test                          # includes the four acceptance tests
+./scripts/regen-results.sh          # regenerates everything the paper cites
+```
+
 ## Licence
 
 Apache-2.0 throughout, code and paper alike. See `LICENSE` and `NOTICE`.

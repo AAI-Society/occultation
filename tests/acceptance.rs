@@ -306,3 +306,115 @@ fn a_minimum_set_size_policy_is_enforceable() {
         "the CLI must exit 1 for --min-set 10"
     );
 }
+
+use std::process::Command;
+
+fn occultation() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_occultation"))
+}
+
+/// Acceptance test 4 — a stub refuses to run without an explicit opt-in.
+#[test]
+fn a_modelled_component_refuses_to_run_without_allow_modelled() {
+    let out = occultation()
+        .args(["bench", "--composed", "--with-escrow", "--iters", "3"])
+        .output()
+        .expect("the binary runs");
+
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "requesting a stub without the flag must exit 3"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--allow-modelled"),
+        "must name the flag: {stderr}"
+    );
+    assert!(
+        stderr.contains("no security"),
+        "must say why the flag exists: {stderr}"
+    );
+}
+
+#[test]
+fn the_same_command_succeeds_with_allow_modelled_and_warns_loudly() {
+    let out = occultation()
+        .args([
+            "bench",
+            "--composed",
+            "--with-escrow",
+            "--allow-modelled",
+            "--iters",
+            "3",
+        ])
+        .output()
+        .expect("the binary runs");
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("MODELLED"),
+        "the warning must reach stderr: {stderr}"
+    );
+    assert!(stderr.contains("no security"));
+}
+
+#[test]
+fn a_plain_bench_never_touches_a_stub_and_says_so() {
+    let out = occultation()
+        .args(["bench", "--iters", "3"])
+        .output()
+        .expect("runs");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("MODELLED"),
+        "no modelled rows without the flag"
+    );
+    assert!(
+        stdout.contains("--allow-modelled"),
+        "must explain what is missing: {stdout}"
+    );
+}
+
+#[test]
+fn bench_with_allow_modelled_labels_every_stub_row() {
+    let out = occultation()
+        .args(["bench", "--allow-modelled", "--iters", "3"])
+        .output()
+        .expect("runs");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ECDAA"));
+    assert!(stdout.contains("escrow"));
+    // Both stub rows plus the footer.
+    assert!(stdout.matches("MODELLED").count() >= 3, "{stdout}");
+}
+
+/// The policy exit codes, end to end, so all four commands drop into CI.
+#[test]
+fn policy_violations_exit_one_and_bad_input_exits_two() {
+    let violation = occultation()
+        .args([
+            "anonymity",
+            "--fleet",
+            "examples/fleet-drifted.toml",
+            "--min-set",
+            "10",
+        ])
+        .output()
+        .expect("runs");
+    assert_eq!(violation.status.code(), Some(1));
+
+    let bad_input = occultation()
+        .args(["anonymity", "--fleet", "examples/does-not-exist.toml"])
+        .output()
+        .expect("runs");
+    assert_eq!(bad_input.status.code(), Some(2));
+}

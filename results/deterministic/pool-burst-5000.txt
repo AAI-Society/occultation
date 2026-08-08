@@ -1,0 +1,49 @@
+Pre-computation pool under burst
+
+  burst rate           5000 presentations/s
+  refill rate          1429 items/s
+  requests             10000
+  served from pool     89
+  stalled              9911
+
+  POOL EXHAUSTED
+
+  latency p50          2455.960 ms
+  latency p95          4705.460 ms
+  latency p99          4905.460 ms
+  latency max          4955.460 ms
+  idle response        60.000 µs
+  amplification        82591.0x  (peak over this 2.0s window)
+  total stall          24558466.900 ms
+  worst stall          4955.400 ms
+
+  duration-invariant figures (do not move with --duration):
+  overload factor      3.50x arrivals over refill
+  growth per request   8.33x idle-response added to each successive stall
+  onset request        89
+
+  distinct blinding factors issued   10000
+  blinding-factor reuse events       0
+  real pool exhaustions              9913
+  (stalled counts the fluid model's queue; real pool exhaustions counts the
+  discrete pool's own None returns — 9911 vs 9913 here. They may differ by one at
+  the drain boundary, where the fluid level can round to >= 1 while the integer
+  pool is already empty; neither is wrong, they are counting different things.)
+
+On exhaustion there are two available behaviours. This tool stalls. It does not
+reuse, and reuse is not configurable: two presentations sharing one blinding
+factor are linkable on sight, and an observer of both transcripts recovers the
+signature scalar and every undisclosed attribute by subtraction.
+
+Stalling is not free either. The amplification figure above is the size of the
+timing side channel: how far a busy agent's response time departs from its idle
+one, and therefore how much of its load an observer can read off latency alone.
+It is the peak over the observation window and grows linearly with --duration, so
+it characterises the window as much as the pool; the overload factor and growth
+per request above are its duration-invariant companions and are the figures to
+quote as a property of this pool rather than of this run.
+
+The stall does not plateau. While arrivals outrun refill the backlog grows, so
+each successive request waits longer than the last and the delay tracks the
+burst's duration — which is what makes it readable rather than merely costly.
+

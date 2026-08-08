@@ -1,0 +1,90 @@
+{
+  "distinguishing_attributes": [
+    "cpu_svn",
+    "microcode",
+    "pce_svn",
+    "pcs_chain",
+    "qe_identity",
+    "tdx_module"
+  ],
+  "effective_set": 52.733333333333334,
+  "entropy_bits": 1.4701037839875375,
+  "fleet": "acme-prod-drifted",
+  "fleet_size": 120,
+  "max_set": 71,
+  "median_set": 11,
+  "min_set": 1,
+  "partitions": [
+    {
+      "host_groups": [
+        "us-east-pool-patched"
+      ],
+      "size": 71,
+      "tcb": {
+        "cpu_svn": "0x0e",
+        "microcode": "0x2b000603",
+        "pce_svn": "13",
+        "pcs_chain": "intel-pcs-2026h1",
+        "qe_identity": "v2.1",
+        "tdx_module": "1.5.05"
+      }
+    },
+    {
+      "host_groups": [
+        "us-east-pool-pending"
+      ],
+      "size": 34,
+      "tcb": {
+        "cpu_svn": "0x0e",
+        "microcode": "0x2b000603",
+        "pce_svn": "12",
+        "pcs_chain": "intel-pcs-2026h1",
+        "qe_identity": "v2.1",
+        "tdx_module": "1.5.05"
+      }
+    },
+    {
+      "host_groups": [
+        "eu-west-rack-7"
+      ],
+      "size": 11,
+      "tcb": {
+        "cpu_svn": "0x0d",
+        "microcode": "0x2b000401",
+        "pce_svn": "12",
+        "pcs_chain": "intel-pcs-2025h2",
+        "qe_identity": "v2.0",
+        "tdx_module": "1.5.03"
+      }
+    },
+    {
+      "host_groups": [
+        "us-east-canary"
+      ],
+      "size": 3,
+      "tcb": {
+        "cpu_svn": "0x0e",
+        "microcode": "0x2b000701",
+        "pce_svn": "13",
+        "pcs_chain": "intel-pcs-2026h1",
+        "qe_identity": "v2.1",
+        "tdx_module": "1.5.05"
+      }
+    },
+    {
+      "host_groups": [
+        "us-east-rebuilt-0419"
+      ],
+      "size": 1,
+      "tcb": {
+        "cpu_svn": "0x0f",
+        "microcode": "0x2b000701",
+        "pce_svn": "14",
+        "pcs_chain": "intel-pcs-2026h1",
+        "qe_identity": "v2.2",
+        "tdx_module": "1.5.06"
+      }
+    }
+  ],
+  "singletons": 1
+}

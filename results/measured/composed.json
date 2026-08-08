@@ -1,0 +1,205 @@
+{
+  "baseline_round_trip_us": 25.375,
+  "budget_us": 15000.0,
+  "desk_study": [
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 13800000,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 18000000,
+          "secs": 0
+        },
+        "verdict": {
+          "over": {
+            "nanos": 3000000,
+            "secs": 0
+          },
+          "verdict": "misses"
+        },
+        "verify": {
+          "nanos": 4200000,
+          "secs": 0
+        }
+      },
+      "label": "naive (no pool, no cached pairings)",
+      "note": "13.8 ms and 4.2 ms were each assessed separately against the 15 ms budget and each looked acceptable.",
+      "origin": {
+        "citation": "research/Accountable Unlinkable Agent Identity.md, \"Empirical Overhead and Execution Latency at Agent Action Rates\"",
+        "kind": "published"
+      }
+    },
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 13800000,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 14900000,
+          "secs": 0
+        },
+        "verdict": {
+          "headroom": {
+            "nanos": 100000,
+            "secs": 0
+          },
+          "verdict": "marginal"
+        },
+        "verify": {
+          "nanos": 1100000,
+          "secs": 0
+        }
+      },
+      "label": "cached pairings only",
+      "note": "Under the limit with 100 us to spare, which leaves nothing for application work, network time or evidence writing.",
+      "origin": {
+        "citation": "research/Accountable Unlinkable Agent Identity.md, \"Empirical Overhead and Execution Latency at Agent Action Rates\"",
+        "kind": "published"
+      }
+    },
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 2800000,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 3900000,
+          "secs": 0
+        },
+        "verdict": {
+          "headroom": {
+            "nanos": 11100000,
+            "secs": 0
+          },
+          "verdict": "fits"
+        },
+        "verify": {
+          "nanos": 1100000,
+          "secs": 0
+        }
+      },
+      "label": "pre-computation pool + cached pairings",
+      "note": "The only composition that fits. Pre-computation is load-bearing, not an optimization.",
+      "origin": {
+        "citation": "research/Accountable Unlinkable Agent Identity.md, \"Empirical Overhead and Execution Latency at Agent Action Rates\"",
+        "kind": "published"
+      }
+    }
+  ],
+  "measured": [
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 547875,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 1316958,
+          "secs": 0
+        },
+        "verdict": {
+          "headroom": {
+            "nanos": 13683042,
+            "secs": 0
+          },
+          "verdict": "fits"
+        },
+        "verify": {
+          "nanos": 769083,
+          "secs": 0
+        }
+      },
+      "label": "naive (no pool, no cached pairings)",
+      "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
+      "origin": {
+        "kind": "measured_here"
+      }
+    },
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 547875,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 1236000,
+          "secs": 0
+        },
+        "verdict": {
+          "headroom": {
+            "nanos": 13764000,
+            "secs": 0
+          },
+          "verdict": "fits"
+        },
+        "verify": {
+          "nanos": 688125,
+          "secs": 0
+        }
+      },
+      "label": "cached pairings only",
+      "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
+      "origin": {
+        "kind": "measured_here"
+      }
+    },
+    {
+      "composed": {
+        "budget": {
+          "nanos": 15000000,
+          "secs": 0
+        },
+        "present": {
+          "nanos": 4332,
+          "secs": 0
+        },
+        "total": {
+          "nanos": 692457,
+          "secs": 0
+        },
+        "verdict": {
+          "headroom": {
+            "nanos": 14307543,
+            "secs": 0
+          },
+          "verdict": "fits"
+        },
+        "verify": {
+          "nanos": 688125,
+          "secs": 0
+        }
+      },
+      "label": "pool (ESTIMATED) + cached pairings",
+      "note": "excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it",
+      "origin": {
+        "basis": "two hash-to-scalar operations; `occultation pool` measures it properly",
+        "kind": "estimated"
+      }
+    }
+  ],
+  "measured_ratio_to_baseline": 51.89982266009852
+}

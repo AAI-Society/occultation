@@ -1,0 +1,148 @@
+{
+  "notes": [
+    "ECDAA and escrow are not shown: they are modelled and require --allow-modelled to execute."
+  ],
+  "rows": [
+    {
+      "cost_us": 7.417000000000001,
+      "label": "Ed25519 sign",
+      "p95_us": 7.959,
+      "provenance": {
+        "component": "Ed25519 sign",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 0.2927801681601074,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 17.916,
+      "label": "Ed25519 verify",
+      "p95_us": 17.959,
+      "provenance": {
+        "component": "Ed25519 verify",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 0.7072198318398926,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 25.333,
+      "label": "Ed25519 sign + verify (baseline)",
+      "p95_us": null,
+      "provenance": {
+        "component": "Ed25519 sign + verify (baseline)",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 1.0,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 40.0,
+      "label": "G1 scalar multiplication",
+      "p95_us": 40.166999999999994,
+      "provenance": {
+        "component": "G1 scalar multiplication",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 1.5789681443176886,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 2.125,
+      "label": "hash_to_scalar",
+      "p95_us": 2.166,
+      "provenance": {
+        "component": "hash_to_scalar",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 0.08388268266687719,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 208.583,
+      "label": "BBS+ sign (issuer)",
+      "p95_us": 239.417,
+      "provenance": {
+        "component": "BBS+ sign (issuer)",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 8.23364781115541,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 649.125,
+      "label": "BBS+ signature verify (holder)",
+      "p95_us": 702.583,
+      "provenance": {
+        "component": "BBS+ signature verify (holder)",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 25.623692417005486,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 543.375,
+      "label": "BBS+ presentation",
+      "p95_us": 596.9159999999999,
+      "provenance": {
+        "component": "BBS+ presentation",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 21.4492953854656,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 769.375,
+      "label": "BBS+ proof verify",
+      "p95_us": 798.75,
+      "provenance": {
+        "component": "BBS+ proof verify",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 30.37046540086054,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    },
+    {
+      "cost_us": 687.167,
+      "label": "BBS+ proof verify, cached pairings",
+      "p95_us": 724.208,
+      "provenance": {
+        "component": "BBS+ proof verify, cached pairings",
+        "kind": "real"
+      },
+      "ratio_to_ed25519": 27.125370070658825,
+      "source": {
+        "iters": 200,
+        "kind": "measured_here"
+      }
+    }
+  ],
+  "title": "Primitive costs against the Ed25519 baseline"
+}

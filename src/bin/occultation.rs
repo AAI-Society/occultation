@@ -39,6 +39,11 @@ enum Cmd {
         /// Run components that provide no security
         #[arg(long)]
         allow_modelled: bool,
+        /// Include the modelled escrow tag in the composed presentation cost.
+        /// Requires --allow-modelled, since the escrow tag is a stub that
+        /// provides no security.
+        #[arg(long)]
+        with_escrow: bool,
         #[arg(long, default_value = "table")]
         format: Format,
     },
@@ -112,8 +117,17 @@ fn run() -> Result<ExitCode> {
             attributes,
             disclose,
             allow_modelled,
+            with_escrow,
             format,
         } => {
+            if with_escrow && !allow_modelled {
+                eprintln!(
+                    "error: --with-escrow runs the modelled threshold-ElGamal escrow stub, \
+                     which provides no security.\n       Pass --allow-modelled as well if you \
+                     accept that."
+                );
+                return Ok(ExitCode::from(3));
+            }
             if allow_modelled {
                 eprintln!("{MODELLED_WARNING}\n");
             }
@@ -123,10 +137,16 @@ fn run() -> Result<ExitCode> {
                 attributes,
                 disclose,
                 allow_modelled,
+                with_escrow,
             };
             let costs = run_bench(&opts)?;
             if composed {
-                let report = occultation::bench::composed_report(&costs);
+                let escrow_tag = if with_escrow {
+                    costs.modelled_escrow_tag.as_ref().map(|s| s.median)
+                } else {
+                    None
+                };
+                let report = occultation::bench::composed_report_with(&costs, escrow_tag);
                 match format {
                     Format::Table => println!("{}", report.render()),
                     Format::Json => {

@@ -24,6 +24,10 @@ pub struct BenchOptions {
     /// How many of them a presentation discloses.
     pub disclose: usize,
     pub allow_modelled: bool,
+    /// Include the modelled escrow tag in the composed presentation cost.
+    /// Requires `allow_modelled`; the CLI enforces that before this struct is
+    /// built.
+    pub with_escrow: bool,
 }
 
 impl Default for BenchOptions {
@@ -42,6 +46,7 @@ impl Default for BenchOptions {
             attributes: 10,
             disclose: 2,
             allow_modelled: false,
+            with_escrow: false,
         }
     }
 }
@@ -476,6 +481,34 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
         baseline_round_trip,
         measured_ratio,
     }
+}
+
+/// The measured escrow tag cost, when the operator asked for it and accepted
+/// what it is. `None` means the composed measured path excludes escrow, and
+/// the report says so.
+pub fn composed_report_with(
+    costs: &PrimitiveCosts,
+    escrow_tag: Option<Duration>,
+) -> ComposedReport {
+    let mut report = composed_report(costs);
+    match escrow_tag {
+        Some(tag) => {
+            for row in &mut report.measured {
+                row.composed = compose(row.composed.present + tag, row.composed.verify);
+                row.label = format!("{} + MODELLED escrow tag", row.label);
+            }
+        }
+        None => {
+            for row in &mut report.measured {
+                row.note = Some(
+                    "excludes the escrow tag, which is modelled; the desk study \
+                     attributes 4.6 ms (33%) of presentation to it"
+                        .into(),
+                );
+            }
+        }
+    }
+    report
 }
 
 impl ComposedReport {

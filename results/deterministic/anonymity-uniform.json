@@ -1,0 +1,27 @@
+{
+  "distinguishing_attributes": [],
+  "effective_set": 120.0,
+  "entropy_bits": -0.0,
+  "fleet": "acme-prod-uniform",
+  "fleet_size": 120,
+  "max_set": 120,
+  "median_set": 120,
+  "min_set": 120,
+  "partitions": [
+    {
+      "host_groups": [
+        "us-east-pool"
+      ],
+      "size": 120,
+      "tcb": {
+        "cpu_svn": "0x0e",
+        "microcode": "0x2b000603",
+        "pce_svn": "13",
+        "pcs_chain": "intel-pcs-2026h1",
+        "qe_identity": "v2.1",
+        "tdx_module": "1.5.05"
+      }
+    }
+  ],
+  "singletons": 0
+}

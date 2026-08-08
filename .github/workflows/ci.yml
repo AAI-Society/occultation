@@ -11,3 +11,18 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+      - name: deterministic results are current
+        run: |
+          ./scripts/regen-results.sh
+          git diff --exit-code results/deterministic/ || {
+            echo "results/deterministic/ is stale — run ./scripts/regen-results.sh and commit"
+            exit 1
+          }
+      - name: measured results have the right shape and version
+        run: |
+          test -s results/measured/composed.json
+          jq -e '.desk_study | length == 3' results/measured/composed.json
+          jq -e '.measured   | length == 3' results/measured/composed.json
+          jq -e '.budget_us == 15000'       results/measured/composed.json
+          grep -q "tool_version: occultation $(cargo pkgid | sed 's/.*[#@]//')" \
+            results/measured/HEADER.txt
