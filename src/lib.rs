@@ -16,6 +16,7 @@ pub mod ecdaa;
 pub mod escrow;
 pub mod harness;
 pub mod modelled;
+pub mod pool;
 pub mod report;
 
 pub use cost::{
