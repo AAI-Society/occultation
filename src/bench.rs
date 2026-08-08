@@ -34,10 +34,18 @@ pub struct BenchOptions {
     pub with_escrow: bool,
 }
 
+/// The credential shape `BenchOptions::default()` measures: ten attributes,
+/// two disclosed — an agent proving authorization scope while revealing
+/// almost nothing. `pool::simulate_burst`'s simulated credential is built
+/// from the same two constants (`DEFAULT_ATTRIBUTES - DEFAULT_DISCLOSE`
+/// undisclosed) so the pool's blinding-factor shape tracks what `bench`
+/// actually measures rather than coinciding with it by an unmaintained
+/// literal.
+pub const DEFAULT_ATTRIBUTES: usize = 10;
+pub const DEFAULT_DISCLOSE: usize = 2;
+
 impl Default for BenchOptions {
     fn default() -> Self {
-        // Ten attributes with two disclosed is the shape P05 describes: an
-        // agent proving authorization scope while revealing almost nothing.
         // 1000, not 100. The Ed25519 round trip is the smallest thing in the
         // table and it divides every other row, so at 100 iterations — of
         // which the harness warms up ten — the denominator moved by 60%
@@ -47,8 +55,8 @@ impl Default for BenchOptions {
         BenchOptions {
             iters: 1000,
             seed: 7,
-            attributes: 10,
-            disclose: 2,
+            attributes: DEFAULT_ATTRIBUTES,
+            disclose: DEFAULT_DISCLOSE,
             allow_modelled: false,
             with_escrow: false,
         }
@@ -418,31 +426,46 @@ pub struct ComposedReport {
 /// only, and the path with both a pre-computation pool and cached pairings.
 pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
     let d = CostProfile::desk_study();
+    let naive_composed = compose(d.present_naive.cost, d.verify_naive.cost);
+    let cached_composed = compose(d.present_naive.cost, d.verify_cached.cost);
+    // The headroom quoted in the cached-pairings-only note below, pulled from
+    // the composition itself rather than typed as "100 us": pinned by test at
+    // the Duration level (`cached_pairings_alone_are_marginal_not_a_pass` in
+    // `cost.rs`), but the prose describing it was not, so a future change to
+    // `CostProfile::desk_study()`'s constants would silently make this
+    // sentence wrong while every test stayed green.
+    let cached_headroom_us = match cached_composed.verdict {
+        crate::cost::BudgetVerdict::Marginal { headroom }
+        | crate::cost::BudgetVerdict::Fits { headroom } => headroom.as_secs_f64() * 1e6,
+        crate::cost::BudgetVerdict::Misses { .. } => 0.0,
+    };
     let desk_study = vec![
         ComposedRow {
             label: "naive (no pool, no cached pairings)".into(),
-            composed: compose(d.present_naive.cost, d.verify_naive.cost),
+            composed: naive_composed.clone(),
             origin: RowOrigin::Published {
                 citation: crate::cost::DESK,
             },
-            note: Some(
-                "13.8 ms and 4.2 ms were each assessed separately against the \
-                 15 ms budget and each looked acceptable."
-                    .into(),
-            ),
+            note: Some(format!(
+                "{p} and {v} were each assessed separately against the {b} budget \
+                 and each looked acceptable.",
+                p = fmt_ms(d.present_naive.cost),
+                v = fmt_ms(d.verify_naive.cost),
+                b = fmt_ms(crate::cost::BUDGET),
+            )),
             includes_modelled: false,
         },
         ComposedRow {
             label: "cached pairings only".into(),
-            composed: compose(d.present_naive.cost, d.verify_cached.cost),
+            composed: cached_composed.clone(),
             origin: RowOrigin::Published {
                 citation: crate::cost::DESK,
             },
-            note: Some(
-                "Under the limit with 100 us to spare, which leaves nothing for \
-                 application work, network time or evidence writing."
-                    .into(),
-            ),
+            note: Some(format!(
+                "Under the limit with {h:.0} us to spare, which leaves nothing for \
+                 application work, network time or evidence writing.",
+                h = cached_headroom_us,
+            )),
             includes_modelled: false,
         },
         ComposedRow {
@@ -634,6 +657,22 @@ impl ComposedReport {
         out
     }
 
+    /// `fmt_ms` prints two decimal places of milliseconds, which is the right
+    /// resolution for every row here except the pooled ESTIMATED row's
+    /// online-phase proxy (~4-5 us): at millisecond resolution that rounds to
+    /// "0.00 ms", indistinguishable from an actually-zero cost.
+    /// `src/pool.rs`'s `render` already learned this lesson for its own idle
+    /// response and switched to microseconds; this mirrors that fix for the
+    /// one column here that needs it, without changing the millisecond
+    /// columns everywhere else.
+    fn fmt_cell(d: Duration) -> String {
+        if d < Duration::from_micros(50) {
+            format!("{:.3} \u{b5}s", d.as_secs_f64() * 1e6)
+        } else {
+            fmt_ms(d)
+        }
+    }
+
     fn rows(rows: &[ComposedRow]) -> String {
         let mut out = format!(
             "  {:<46} {:>10} {:>10} {:>10}  {}\n",
@@ -643,9 +682,9 @@ impl ComposedReport {
             out.push_str(&format!(
                 "  {:<46} {:>10} {:>10} {:>10}  {}\n",
                 r.label,
-                fmt_ms(r.composed.present),
-                fmt_ms(r.composed.verify),
-                fmt_ms(r.composed.total),
+                Self::fmt_cell(r.composed.present),
+                Self::fmt_cell(r.composed.verify),
+                Self::fmt_cell(r.composed.total),
                 r.composed.verdict
             ));
             if let Some(n) = &r.note {
@@ -691,6 +730,48 @@ mod composed_tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    #[test]
+    fn fmt_cell_switches_to_microseconds_below_fifty_microseconds() {
+        assert_eq!(
+            ComposedReport::fmt_cell(Duration::from_micros(5)),
+            "5.000 µs"
+        );
+        assert_eq!(
+            ComposedReport::fmt_cell(Duration::from_micros(49)),
+            "49.000 µs"
+        );
+        // At and above the threshold, behaviour matches `fmt_ms` exactly.
+        assert_eq!(
+            ComposedReport::fmt_cell(Duration::from_micros(50)),
+            fmt_ms(Duration::from_micros(50))
+        );
+        assert_eq!(
+            ComposedReport::fmt_cell(Duration::from_millis(2)),
+            fmt_ms(Duration::from_millis(2))
+        );
+    }
+
+    /// The two prose literals in the desk-study notes ("13.8 ms and 4.2 ms",
+    /// "100 us to spare") must track `CostProfile::desk_study()`'s actual
+    /// constants rather than being typed independently of them. Pinned here
+    /// against the known constants so a future change to those constants
+    /// that is not mirrored in the prose fails this test rather than only
+    /// silently making the rendered sentence wrong.
+    #[test]
+    fn the_desk_study_notes_are_interpolated_not_hand_typed() {
+        let out = composed_report(&costs()).render();
+        assert!(
+            out.contains(
+                "13.80 ms and 4.20 ms were each assessed separately against the 15.00 ms budget"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("Under the limit with 100 us to spare"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -788,6 +869,56 @@ mod composed_tests {
             ratio > floor,
             "composed BBS+ was only {ratio:.1}x Ed25519 (floor {floor})"
         );
+    }
+
+    /// `includes_modelled` exists so a JSON consumer filtering on
+    /// `origin.kind` still notices a stub's cost folded into a
+    /// `MeasuredHere` row — `origin` alone cannot say so, since folding in
+    /// the escrow tag does not change a row's `RowOrigin`. Setting the field
+    /// to a hardcoded `false` survives every other test in this module,
+    /// because none of them inspect it; check both directions directly.
+    #[test]
+    fn includes_modelled_is_true_only_when_the_escrow_tag_is_actually_folded_in() {
+        let c = costs();
+        let without = composed_report_with(&c, None);
+        assert!(
+            without.measured.iter().all(|r| !r.includes_modelled),
+            "no escrow tag was supplied; no row may claim one is folded in"
+        );
+
+        let with = composed_report_with(&c, Some(Duration::from_micros(4_600)));
+        assert!(
+            with.measured.iter().all(|r| r.includes_modelled),
+            "an escrow tag was supplied; every measured row must say so"
+        );
+    }
+
+    /// `run_bench`'s own doc on `BenchOptions::with_escrow` claims "the check
+    /// holds for library callers too" — i.e. a caller going through the
+    /// library directly, never through the CLI, still gets the
+    /// `--with-escrow` requires `--allow-modelled` refusal. Deleting the
+    /// `if opts.with_escrow { ModelledPermit::from_flag(...)?; }` guard in
+    /// `run_bench` leaves the acceptance suite green, because those tests
+    /// all go through the binary, whose own separate CLI-level guard would
+    /// still catch it.
+    #[test]
+    fn with_escrow_is_gated_at_the_library_level_not_only_by_the_cli() {
+        let err = run_bench(&BenchOptions {
+            iters: 3,
+            with_escrow: true,
+            allow_modelled: false,
+            ..Default::default()
+        })
+        .expect_err("with_escrow without allow_modelled must be refused by the library itself");
+        assert!(matches!(err, BenchError::Modelled(_)));
+
+        assert!(run_bench(&BenchOptions {
+            iters: 3,
+            with_escrow: true,
+            allow_modelled: true,
+            ..Default::default()
+        })
+        .is_ok());
     }
 
     /// The JSON form must carry provenance as data, not just as prose in

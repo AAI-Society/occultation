@@ -205,7 +205,13 @@ fn run() -> Result<ExitCode> {
                 if online_given {
                     "given"
                 } else {
-                    "measured on this host: 2x hash-to-scalar"
+                    // Not a measurement: nothing in this tool times a pooled
+                    // presentation's online phase directly (see
+                    // `bench::composed_report`'s identical `pooled_estimate`
+                    // and its `RowOrigin::Estimated` tag). Labelling this
+                    // "measured" would read as more solid evidence than it
+                    // is — the exact mistake this tool exists to correct.
+                    "ESTIMATED on this host: 2x hash-to-scalar, not a measurement of the pooled online phase"
                 },
             );
             let cfg = occultation::pool::BurstConfig {
@@ -221,14 +227,24 @@ fn run() -> Result<ExitCode> {
                 Format::Table => println!("{}", report.render()),
                 Format::Json => {
                     // The table's cost provenance ("given" vs "measured on
-                    // this host") only ever reached stderr. JSON consumers
-                    // read stdout alone, so without this they see the
-                    // resulting `refill_cost_us`/`online_cost_us` figures but
-                    // never learn whether those were supplied or measured.
+                    // this host" vs "ESTIMATED on this host") only ever
+                    // reached stderr. JSON consumers read stdout alone, so
+                    // without this they see the resulting
+                    // `refill_cost_us`/`online_cost_us` figures with no way
+                    // to tell a supplied value from a measurement from an
+                    // estimate. A three-valued string, not the previous
+                    // `*_given: bool`: `online_cost_given: false` read as
+                    // "measured", when the unsupplied default is actually an
+                    // estimate (two hash-to-scalar operations), never a
+                    // timing of the pooled online phase — the same
+                    // measured-vs-estimated conflation this tool exists to
+                    // correct elsewhere.
+                    let refill_origin = if refill_given { "given" } else { "measured" };
+                    let online_origin = if online_given { "given" } else { "estimated" };
                     let mut v = report.to_json();
                     if let Some(obj) = v.as_object_mut() {
-                        obj.insert("refill_cost_given".to_string(), refill_given.into());
-                        obj.insert("online_cost_given".to_string(), online_given.into());
+                        obj.insert("refill_cost_origin".to_string(), refill_origin.into());
+                        obj.insert("online_cost_origin".to_string(), online_origin.into());
                     }
                     println!("{}", serde_json::to_string_pretty(&v)?);
                 }

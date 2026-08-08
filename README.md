@@ -55,10 +55,17 @@ same estimate), so that row is derived from a cheaper proxy instead, and says
 so in its own note and in its `origin.kind` in `--format json`.
 
 This tagging scheme is `bench`'s. `pool` and `anonymity` print their own
-figures untagged: nothing about them is published or estimated, they are a
-plain measurement of a burst simulation and a plain partition of the fleet
-file you gave them, and tagging would say nothing a reader doesn't already
-know from the command that produced them.
+figures untagged, with one exception: `pool`'s `--online` default, when the
+operator does not supply one, is the identical crude estimate as `bench
+--composed`'s `ESTIMATED` row (two hash-to-scalar operations — not a
+measurement of a pooled presentation's online phase), and `pool` says so on
+stderr and in `--format json`'s `online_cost_origin` field (`"given"`,
+`"measured"` or `"estimated"`). Everything else about `pool` and
+`anonymity` is a plain measurement or a plain partition and needs no tag:
+`pool`'s `--refill` default, unlike `--online`, is a real measurement (one
+presentation's group work), and `anonymity`'s figures are arithmetic over
+the fleet file you gave it. Tagging those would say nothing a reader
+doesn't already know from the command that produced them.
 
 ## Commands
 

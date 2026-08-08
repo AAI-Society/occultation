@@ -2,15 +2,15 @@ Primitive costs against the Ed25519 baseline
 
 OPERATION                                        COST          P95   xED25519  PROVENANCE
 Ed25519 sign                                 0.007 ms     0.008 ms        0.3  measured here (n=200)
-Ed25519 verify                               0.018 ms     0.018 ms        0.7  measured here (n=200)
+Ed25519 verify                               0.018 ms     0.021 ms        0.7  measured here (n=200)
 Ed25519 sign + verify (baseline)             0.025 ms            -        1.0  measured here (n=200)
-G1 scalar multiplication                     0.039 ms     0.040 ms        1.5  measured here (n=200)
+G1 scalar multiplication                     0.040 ms     0.040 ms        1.6  measured here (n=200)
 hash_to_scalar                               0.002 ms     0.002 ms        0.1  measured here (n=200)
-BBS+ sign (issuer)                           0.211 ms     0.237 ms        8.3  measured here (n=200)
-BBS+ signature verify (holder)               0.650 ms     0.703 ms       25.6  measured here (n=200)
-BBS+ presentation                            0.543 ms     0.589 ms       21.4  measured here (n=200)
-BBS+ proof verify                            0.773 ms     0.795 ms       30.5  measured here (n=200)
-BBS+ proof verify, cached pairings           0.690 ms     0.718 ms       27.2  measured here (n=200)
+BBS+ sign (issuer)                           0.206 ms     0.218 ms        8.1  measured here (n=200)
+BBS+ signature verify (holder)               0.646 ms     0.702 ms       25.4  measured here (n=200)
+BBS+ presentation                            0.534 ms     0.582 ms       21.0  measured here (n=200)
+BBS+ proof verify                            0.771 ms     0.793 ms       30.4  measured here (n=200)
+BBS+ proof verify, cached pairings           0.681 ms     0.710 ms       26.8  measured here (n=200)
 
 ECDAA and escrow are not shown: they are modelled and require --allow-modelled to execute.
 

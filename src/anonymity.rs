@@ -95,8 +95,11 @@ pub struct AnonymityReport {
     /// Shannon entropy over the partition distribution, in bits. Zero when
     /// every host looks alike.
     pub entropy_bits: f64,
-    /// The TCB attributes that actually take more than one value. These are
-    /// the fields doing the deanonymizing.
+    /// The TCB attributes that actually take more than one value across the
+    /// fleet. **Not** necessarily the fields doing the deanonymizing: an
+    /// attribute can vary without splitting anything another attribute does
+    /// not already split (see `render`'s note on this distinction, and
+    /// `it_names_the_attributes_that_actually_split_the_fleet` below).
     pub distinguishing_attributes: Vec<String>,
 }
 
@@ -186,13 +189,22 @@ pub fn partition(fleet: &Fleet) -> Result<AnonymityReport, AnonymityError> {
         // user-supplied `count` (e.g. 5_000_000_000), which would violate the
         // no-panics-on-malformed-input constraint.
         effective_set: sizes.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / n,
+        // `+ 0.0` so a zero-leakage fleet stores (and therefore serializes,
+        // via both `render` and `to_json`) positive zero rather than
+        // negative zero: the sum below is negated, and IEEE 754 gives
+        // `-0.0 + 0.0 == 0.0`. Fixed at the source rather than only in
+        // `render`'s formatting, because `to_json` serializes this field
+        // directly (`derive(Serialize)`) and previously carried the raw
+        // negated sum into the committed `results/deterministic/
+        // anonymity-uniform.json` artifact as `"entropy_bits": -0.0`.
         entropy_bits: -sizes
             .iter()
             .map(|&s| {
                 let p = s as f64 / n;
                 p * p.log2()
             })
-            .sum::<f64>(),
+            .sum::<f64>()
+            + 0.0,
         distinguishing_attributes,
         partitions,
     })
@@ -215,10 +227,10 @@ impl AnonymityReport {
             self.max_set,
             self.singletons,
             self.effective_set,
-            // `+ 0.0` so a zero-leakage fleet does not print "-0.000 bits":
-            // the sum is negated, and the negative-zero sign bit survives
-            // `{:.3}` formatting.
-            self.entropy_bits + 0.0
+            // `entropy_bits` is already guaranteed non-negative-zero at
+            // construction (see `partition`'s `+ 0.0`), so this is a plain
+            // field read, not a second correction.
+            self.entropy_bits
         ));
 
         out.push_str(&format!(
@@ -397,6 +409,30 @@ pce_svn = "12"
         assert!(partition(&uniform).unwrap().entropy_bits.abs() < 1e-12);
         let drifted: Fleet = toml::from_str(DRIFTED).unwrap();
         assert!(partition(&drifted).unwrap().entropy_bits > 0.0);
+    }
+
+    /// `.abs() < 1e-12` above passes identically whether `entropy_bits` holds
+    /// `0.0` or `-0.0`, so it cannot catch the sign. A committed artifact,
+    /// `results/deterministic/anonymity-uniform.json`, shipped with
+    /// `"entropy_bits": -0.0` because `to_json` (via `derive(Serialize)`)
+    /// serializes the field directly, and the `+ 0.0` guard used to live only
+    /// in `render`'s formatting. Check the sign, and check the actual JSON
+    /// output specifically, since a fix that only touched `render` would
+    /// leave this failing.
+    #[test]
+    fn entropy_bits_is_not_negative_zero_for_a_uniform_fleet() {
+        let uniform: Fleet = toml::from_str(UNIFORM).unwrap();
+        let r = partition(&uniform).unwrap();
+        assert!(
+            r.entropy_bits.is_sign_positive(),
+            "entropy_bits is -0.0, which round-trips into JSON as \"-0.0\""
+        );
+        let v = r.to_json();
+        assert_eq!(
+            v["entropy_bits"].to_string(),
+            "0.0",
+            "the committed JSON artifact must not read -0.0: {v}"
+        );
     }
 
     #[test]

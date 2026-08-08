@@ -11,6 +11,18 @@ use std::time::Duration;
 /// and turning it into an out-of-memory kill helps nobody.
 const MAX_REQUESTS: usize = 20_000_000;
 
+/// Above this, converting the simulated stall back into a `Duration` would
+/// panic: `Duration::from_secs_f64` cannot represent more than
+/// `Duration::MAX` (~1.8e19 seconds), and this simulation's backlog grows
+/// roughly linearly in the number of stalled requests once arrivals outrun
+/// refill — an absurd `--refill` (a units typo like `100000000000000000s`)
+/// reaches that ceiling a few hundred requests into an otherwise ordinary
+/// burst. Ten orders of magnitude below the actual ceiling: nothing this
+/// tool models plausibly waits 31 million years for a presentation, so the
+/// margin exists to catch the mistake with room to spare, not to
+/// accommodate a legitimate value near it.
+const MAX_STALL_SECS: f64 = 1e15;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PoolError {
     #[error("a pool needs capacity of at least 1, got {0}")]
@@ -21,6 +33,15 @@ pub enum PoolError {
     ZeroRefillCost,
     #[error("that burst implies {0} requests, above the {MAX_REQUESTS} limit; shorten --duration or lower --burst")]
     TooManyRequests(u128),
+    #[error(
+        "the simulated stall grew to {stall_secs:.3e} seconds, which cannot be represented as a \
+         Duration; refill cost ({refill_cost:?}) is far too large for this burst — check --refill \
+         for a units typo"
+    )]
+    StallOverflow {
+        stall_secs: f64,
+        refill_cost: Duration,
+    },
 }
 
 /// One pre-computed presentation's worth of blinding.
@@ -311,6 +332,22 @@ pub struct BurstReport {
     pub onset_request: Option<usize>,
 }
 
+/// Derive the reuse audit's two headline figures from the fingerprints
+/// actually observed, rather than inlining `fingerprints.len()` and
+/// `requests - fingerprints.len()` at the call site.
+///
+/// A pure function so the derivation can be tested against a fake
+/// fingerprint set where `distinct != requests` — every real invocation of
+/// `simulate_burst` issues a fresh fingerprint per request, so
+/// `distinct_blinding_factors == requests` and `reuse_events == 0` always
+/// hold in practice, and no test built from a real run can distinguish this
+/// derivation from the literals `distinct_blinding_factors: requests` and
+/// `reuse_events: 0`, which would pass every existing test unchanged.
+fn reuse_audit(requests: usize, fingerprints: &HashSet<[u8; 32]>) -> (usize, usize) {
+    let distinct = fingerprints.len();
+    (distinct, requests - distinct)
+}
+
 /// Run a burst against a pool.
 ///
 /// Refill is modelled as one worker producing at `1/refill_cost`, capped at
@@ -331,7 +368,12 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     }
     let requests = implied as usize;
 
-    let mut pool = PrecomputationPool::try_new(cfg.capacity, 8, cfg.seed)?;
+    // Undisclosed count mirrors `bench`'s default credential shape
+    // (`DEFAULT_ATTRIBUTES` attributes, `DEFAULT_DISCLOSE` disclosed) rather
+    // than a standalone literal, so this simulation's blinding-factor size
+    // profile cannot silently drift from what `bench` actually measures.
+    let undisclosed = crate::bench::DEFAULT_ATTRIBUTES - crate::bench::DEFAULT_DISCLOSE;
+    let mut pool = PrecomputationPool::try_new(cfg.capacity, undisclosed, cfg.seed)?;
     pool.fill();
 
     let refill_rate = 1.0 / cfg.refill_cost.as_secs_f64();
@@ -395,6 +437,12 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
         };
         fingerprints.insert(item.fingerprint());
 
+        if !stall_secs.is_finite() || stall_secs > MAX_STALL_SECS {
+            return Err(PoolError::StallOverflow {
+                stall_secs,
+                refill_cost: cfg.refill_cost,
+            });
+        }
         let stall = Duration::from_secs_f64(stall_secs);
         stalls.push(stall);
         latencies.push(cfg.online_cost + stall);
@@ -410,6 +458,7 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     };
     let p50 = pick(0.50);
     let latency_max = latencies.last().copied().unwrap_or_default();
+    let (distinct_blinding_factors, reuse_events) = reuse_audit(requests, &fingerprints);
 
     Ok(BurstReport {
         capacity: cfg.capacity,
@@ -437,8 +486,8 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
             (true, false) => f64::INFINITY,
             (false, false) => latency_max.as_secs_f64() / cfg.online_cost.as_secs_f64(),
         },
-        distinct_blinding_factors: fingerprints.len(),
-        reuse_events: requests - fingerprints.len(),
+        distinct_blinding_factors,
+        reuse_events,
         pool_exhaustions: pool.exhaustions(),
         overload_factor: cfg.burst_rate_hz / refill_rate,
         growth_per_request: if cfg.online_cost.is_zero() {
@@ -800,6 +849,19 @@ mod tests {
         assert_eq!(r.served_immediately, r.requests);
         assert_eq!(r.pool_exhaustions, 0, "a pool that never ran dry");
         assert!(r.onset_request.is_none());
+        // Restored: a prior fix round dropped these two and never put them
+        // back. `refill_rate_hz` and `burst_rate_hz` are restated from `cfg`
+        // so a reader can audit `overload_factor` without recomputing it from
+        // the command line; nothing else in this file pinned that the
+        // restatement is actually correct rather than, say, swapped.
+        assert_eq!(r.refill_rate_hz, 1.0 / cfg.refill_cost.as_secs_f64());
+        assert_eq!(r.burst_rate_hz, cfg.burst_rate_hz);
+        // And `refill_cost` itself: restated for the same auditability reason
+        // (see the field's doc comment), and nothing else pins that it is
+        // `cfg.refill_cost` specifically rather than some other `Duration` —
+        // swapping it for `cfg.online_cost`, say, would leave the rest of
+        // this suite green.
+        assert_eq!(r.refill_cost, cfg.refill_cost);
         assert!(
             r.overload_factor < 1.0,
             "arrivals must be below refill here"
@@ -934,6 +996,56 @@ mod tests {
         assert_eq!(a.stalled, b.stalled);
         assert_eq!(a.stall_total, b.stall_total);
         assert_eq!(a.latency_p99, b.latency_p99);
+    }
+
+    /// `distinct_blinding_factors: requests` and `reuse_events: 0` are two
+    /// literals that coincide with `simulate_burst`'s real output on every
+    /// actual run, because the pool never issues a repeat. Test the
+    /// derivation directly, on a fake fingerprint set where the two numbers
+    /// differ, so those literals cannot silently stand in for it.
+    #[test]
+    fn reuse_audit_derives_both_figures_from_the_fingerprint_set_not_a_literal() {
+        let mut fps: HashSet<[u8; 32]> = HashSet::new();
+        fps.insert([1u8; 32]);
+        fps.insert([2u8; 32]);
+        fps.insert([3u8; 32]);
+        // 5 requests, only 3 distinct fingerprints: 2 reuse events.
+        let (distinct, reuse) = reuse_audit(5, &fps);
+        assert_eq!(distinct, 3);
+        assert_eq!(reuse, 2);
+        assert_ne!(
+            distinct, 5,
+            "must not equal `requests` when the fingerprints actually differ"
+        );
+
+        // The degenerate case, where the literals would coincide, is also
+        // covered so a fix in one direction cannot break the other.
+        let mut all_same: HashSet<[u8; 32]> = HashSet::new();
+        all_same.insert([9u8; 32]);
+        let (d2, r2) = reuse_audit(1, &all_same);
+        assert_eq!((d2, r2), (1, 0));
+    }
+
+    /// C1: a refill cost implying a stall beyond what `Duration` can
+    /// represent must error, not panic partway through the simulation. This
+    /// reproduces the exact operator input the review found:
+    /// `pool --burst 1000 --duration 1s --refill 100000000000000000s
+    /// --online 1us`, which panicked at `Duration::from_secs_f64` once the
+    /// backlog's implied stall exceeded `Duration::MAX`.
+    #[test]
+    fn an_absurdly_large_refill_cost_errors_rather_than_overflowing_duration() {
+        let cfg = BurstConfig {
+            capacity: 64,
+            refill_cost: Duration::from_secs(100_000_000_000_000_000),
+            online_cost: Duration::from_micros(1),
+            burst_rate_hz: 1000.0,
+            duration: Duration::from_secs(1),
+            seed: 7,
+        };
+        match simulate_burst(&cfg) {
+            Err(PoolError::StallOverflow { .. }) => {}
+            other => panic!("expected PoolError::StallOverflow, got {other:?}"),
+        }
     }
 
     #[test]

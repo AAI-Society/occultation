@@ -148,8 +148,9 @@ of an unrelated optimization does not: cached pairings save
 \deskcachedsavingpct{} of verification in the desk study's figures and
 \measuredcachedsavingpct{} of it in ours. The composition error is
 arithmetic, not a property of any one machine. Pre-computation is what makes
-the composed path fit at all, which converts a performance question into a
-security one: what happens when the pre-computed pool runs out under burst?
+the desk study's own published figures fit the budget at all, which converts
+a performance question into a security one: what happens when the
+pre-computed pool runs out under burst?
 We simulate it. The pool stalls; it does not reuse, and reuse is not
 configurable, because we show precisely what reuse costs --- an observer of
 two presentations sharing one blinding factor recovers the signature scalar
@@ -160,10 +161,12 @@ worst response in a \poolwindow{} window is \poolamplification{}$\times$ an
 idle one, a timing side channel with a duration-invariant signature ---
 overload factor \pooloverloadfactor{}$\times$, growth per request
 \poolgrowthperrequest{}$\times$ an idle response, opening at request
-\poolonsetrequest{}. Separately, we measure the anonymity set the hardware
-attestation layer actually has to work with: \anonfleetsize{} identical
-hosts, after six weeks of ordinary operational drift in patch level and
-microcode, partition into \anonconfigs{} distinguishable groups of
+\poolonsetrequest{}. Separately, we partition a fleet description --- a
+synthetic, hand-authored fixture, not telemetry from any live fleet --- to
+see how large an anonymity set the hardware attestation layer actually
+leaves standing: \anonfleetsize{} identical hosts, after six weeks of the
+kind of operational drift in patch level and microcode such a fleet would
+accumulate, partition into \anonconfigs{} distinguishable groups of
 \anonsizes{} --- \anonsingletons{} host alone on its configuration before
 any credential is even presented. Effective set size \anoneffectiveset{} of
 \anonfleetsize{}; entropy \anonentropy{}. Two of the five layers this paper's
@@ -396,14 +399,20 @@ security. \\
 \end{table}
 
 Three of these five rows are what the rest of this paper touches: hardware
-attestation, the agent credential, and accountability. Every figure in
-Section~\ref{sec:results} that is not explicitly labelled \texttt{MODELLED}
-rests on real BLS12-381 pairing arithmetic and a real BBS+ implementation,
-timed on real hardware --- that is the agent-credential row. Every figure
-that touches ECDAA or threshold escrow --- the hardware-attestation and
-accountability rows --- is a cost estimate from a stub with no cryptographic
-content, and this paper does not use either stub to support any claim about
-security --- only, where unavoidable, about cost, and always labelled.
+attestation, the agent credential, and accountability. Of Section~
+\ref{sec:results}'s figures, only Table~\ref{tab:primitives} --- the
+agent-credential row, not explicitly labelled \texttt{MODELLED} --- rests on
+real BLS12-381 pairing arithmetic and a real BBS+ implementation timed on
+real hardware. The section's other figures are not timings on this hardware
+at all: Table~\ref{tab:composed}'s desk-study columns are the published
+study's own constants, never run here; Table~\ref{tab:anonymity} partitions
+a fixed TOML fixture, which involves no cryptography to time; and
+Section~\ref{sec:results-pool}'s burst simulation runs on operator-supplied
+cost inputs, not a live measurement. Every figure that touches ECDAA or
+threshold escrow --- the hardware-attestation and accountability rows --- is
+a cost estimate from a stub with no cryptographic content, and this paper
+does not use either stub to support any claim about security --- only,
+where unavoidable, about cost, and always labelled.
 
 The escrow stub's absence from the real half of Table~\ref{tab:boundary} is
 deliberate, not an oversight, for the reason Section~\ref{sec:related}'s
@@ -436,7 +445,8 @@ structural mistake unavailable. It composes a presentation cost and a
 verification cost into a single \texttt{Composed} value, sums them, and
 judges the sum --- never a half --- against the \deskbudget{}
 budget defined once, in \texttt{src/cost.rs}, as the single source of truth
-every command reads. A verdict is one of three values, not two:
+\texttt{bench} reads (\texttt{pool} and \texttt{anonymity} answer different
+questions and do not consult it). A verdict is one of three values, not two:
 \texttt{Fits}, \texttt{Misses}, or --- the variant that earns its place ---
 \texttt{Marginal}, for a composition that is under budget by no more than
 5\,\% of it. Without that third value, \desktotalcached{} against a
@@ -507,19 +517,28 @@ cached pairings, fits with room, which is the paper's headline correction:
 pre-computation is not an optimization on top of a design that already
 works. It is the reason the design fits its own budget at all.
 
-Table~\ref{tab:primitives} is the same operations, measured here on this
-host rather than read from a publication.
+Table~\ref{tab:primitives} measures the individual primitives that compose
+Table~\ref{tab:composed}'s presentation and verification costs, timed here
+on this host rather than read from a publication: ten primitive operations
+rather than three compositions, and without a budget verdict against any of
+them individually, which is the entire point Table~\ref{tab:composed}
+exists to make.
 
 \input{../results/measured/primitives-table.tex}
 
-The measured composed path (\texttt{results/measured/composed.txt}, not
-reproduced as a table because wall-clock figures are not diffed by CI) is
-\measureddivergencefactor{}$\times$ \measureddivergencedirection{} here than
-the desk study's published figures imply, and the composed BBS+ path costs
-\measuredratiotobaseline{}$\times$ an Ed25519 sign-and-verify round trip on
-this host. The composition error itself is unaffected by any of this: it is
-an error in arithmetic, not a property of any one machine, and it reproduces
-identically wherever the desk study's published figures are summed.
+The measured composed path (\texttt{results/measured/composed.txt}, reported
+in prose here rather than as a table) is \measureddivergencefactor{}$\times$
+\measureddivergencedirection{} here than the desk study's published figures
+imply, and the composed BBS+ path costs \measuredratiotobaseline{}$\times$ an
+Ed25519 sign-and-verify round trip on this host. That divergence factor is
+not an apples-to-apples comparison: the desk study's naive presentation
+figure folds in a \SI{4.6}{\milli\second} (33\,\%) allowance for the escrow
+tag, while the measured figure here excludes escrow entirely; excluding
+escrow from both sides instead gives a divergence of roughly
+\measureddivergencefactorexclescrow{}$\times$. The composition error itself
+is unaffected by any of this: it is an error in arithmetic, not a property
+of any one machine, and it reproduces identically wherever the desk study's
+published figures are summed.
 
 What the magnitude alone would hide is that the divergence is not uniform.
 Cached pairings are the one optimization measured on both sides of the
@@ -554,6 +573,13 @@ stall once the pool runs dry, and an onset at request \poolonsetrequest{}
 one of \pooldistinctblinding{} requests received a distinct blinding factor;
 reuse events: \poolreuseevents{}.
 
+The refill and online costs above (\poolrefillcostsi{} and
+\poolonlinecostsi{}) are values \texttt{scripts/regen-results.sh} stipulates
+for this simulation, not a measurement of any specific deployment;
+\poolamplification{}$\times$ and \poolgrowthperrequest{}$\times$ both scale
+inversely with the chosen online cost, while \pooloverloadfactor{}$\times$
+does not depend on it.
+
 \subsection{Anonymity under fleet drift}
 \label{sec:results-anonymity}
 
@@ -562,23 +588,26 @@ reuse events: \poolreuseevents{}.
 Table~\ref{tab:anonymity} answers a question the desk study's cost analysis
 does not ask at all: given perfect unlinkability at the credential layer,
 how large is the anonymity set the hardware attestation layer actually
-leaves standing? \texttt{examples/fleet-drifted.toml} encodes
+leaves standing? \texttt{examples/fleet-drifted.toml} is a synthetic,
+hand-authored fixture, not telemetry from any live fleet; it encodes
 \anonfleetsize{} hosts of identical hardware after six weeks of the kind of
-operational drift every
+operational drift a
 real fleet accumulates --- a canary batch here, a delayed patch there, a
 microcode revision that shipped to some racks and not others. A uniform
 fleet with none of that drift (\texttt{examples/fleet-uniform.toml}) is one
 anonymity set the size of the whole fleet, by construction, and serves only
 as the tool's control case; Table~\ref{tab:anonymity} is the drifted one,
-which is the realistic one.
+more representative of ordinary operation, though both fixtures are
+synthetic rather than telemetry from a live fleet.
 
 % ================================================================
 \section{Is the Pre-Computation Pool Sound?}
 \label{sec:pool}
 
-Section~\ref{sec:results-composed} established that pre-computation is what
-lets the composed path fit its budget at all, not an optional speed-up on
-top of a design that already worked. That reframing relocates the risk. The
+Section~\ref{sec:results-composed} established that, in the desk study's own
+published figures, pre-computation is what lets the composed path fit its
+budget at all, not an optional speed-up on top of a design that already
+worked. That reframing relocates the risk. The
 question is no longer whether BBS+ is fast enough; it is whether the pool
 that makes it fast enough is sound. Nobody asked this question before the
 desk study's arithmetic error made pre-computation load-bearing, because

@@ -3,7 +3,7 @@ The composed present-and-verify path against a 15 ms budget
 PUBLISHED — not measured on this stack. Source: research/Accountable Unlinkable Agent Identity.md, "Empirical Overhead and Execution Latency at Agent Action Rates"
   COMPOSITION                                       PRESENT     VERIFY      TOTAL  VERDICT
   naive (no pool, no cached pairings)              13.80 ms    4.20 ms   18.00 ms  MISSES by 3.00 ms
-      13.8 ms and 4.2 ms were each assessed separately against the 15 ms budget and each looked acceptable.
+      13.80 ms and 4.20 ms were each assessed separately against the 15.00 ms budget and each looked acceptable.
   cached pairings only                             13.80 ms    1.10 ms   14.90 ms  MARGINAL — 0.10 ms spare, which is not headroom
       Under the limit with 100 us to spare, which leaves nothing for application work, network time or evidence writing.
   pre-computation pool + cached pairings            2.80 ms    1.10 ms    3.90 ms  fits, 11.10 ms spare
@@ -14,16 +14,16 @@ against the budget and each looked acceptable. Their sum is 18.00 ms, which is o
 
 measured here
   COMPOSITION                                       PRESENT     VERIFY      TOTAL  VERDICT
-  naive (no pool, no cached pairings)               0.54 ms    0.77 ms    1.32 ms  fits, 13.68 ms spare
+  naive (no pool, no cached pairings)               0.54 ms    0.77 ms    1.31 ms  fits, 13.69 ms spare
       excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it
-  cached pairings only                              0.54 ms    0.69 ms    1.23 ms  fits, 13.77 ms spare
+  cached pairings only                              0.54 ms    0.68 ms    1.22 ms  fits, 13.78 ms spare
       excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it
-  pool (ESTIMATED) + cached pairings                0.00 ms    0.69 ms    0.69 ms  fits, 14.31 ms spare
+  pool (ESTIMATED) + cached pairings               4.250 µs    0.68 ms    0.69 ms  fits, 14.31 ms spare
       The pooled presentation here is a crude estimate, not a measurement, and it is almost certainly too low: it implies a 99% reduction where the desk study's own pooled figure implies 80%. It also excludes the escrow tag, which is modelled; the desk study attributes 4.6 ms (33%) of presentation to it.
 
 Measured and published figures differ: the composed path is 14x cheaper
 here than the desk study's figures imply. The composition error is unaffected —
-it is an error in arithmetic, not in hardware. Composed BBS+ costs 52x an
+it is an error in arithmetic, not in hardware. Composed BBS+ costs 51x an
 Ed25519 sign-and-verify round trip of 0.03 ms here.
 
 The divergence is not uniform. Cached pairings are the one optimization measured

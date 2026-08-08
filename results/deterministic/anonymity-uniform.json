@@ -1,7 +1,7 @@
 {
   "distinguishing_attributes": [],
   "effective_set": 120.0,
-  "entropy_bits": -0.0,
+  "entropy_bits": 0.0,
   "fleet": "acme-prod-uniform",
   "fleet_size": 120,
   "max_set": 120,

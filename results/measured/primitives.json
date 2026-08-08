@@ -11,28 +11,28 @@
         "component": "Ed25519 sign",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.2918125663925719,
+      "ratio_to_ed25519": 0.2922955665024631,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 18.0,
+      "cost_us": 17.958,
       "label": "Ed25519 verify",
-      "p95_us": 18.084000000000003,
+      "p95_us": 19.5,
       "provenance": {
         "component": "Ed25519 verify",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.7081874336074281,
+      "ratio_to_ed25519": 0.707704433497537,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 25.417,
+      "cost_us": 25.375,
       "label": "Ed25519 sign + verify (baseline)",
       "p95_us": null,
       "provenance": {
@@ -46,14 +46,14 @@
       }
     },
     {
-      "cost_us": 39.959,
+      "cost_us": 39.375,
       "label": "G1 scalar multiplication",
-      "p95_us": 40.333999999999996,
+      "p95_us": 39.625,
       "provenance": {
         "component": "G1 scalar multiplication",
         "kind": "real"
       },
-      "ratio_to_ed25519": 1.5721367588621789,
+      "ratio_to_ed25519": 1.5517241379310345,
       "source": {
         "iters": 200,
         "kind": "measured_here"
@@ -62,82 +62,82 @@
     {
       "cost_us": 2.125,
       "label": "hash_to_scalar",
-      "p95_us": 2.25,
+      "p95_us": 2.1670000000000003,
       "provenance": {
         "component": "hash_to_scalar",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.08360546091198803,
+      "ratio_to_ed25519": 0.08374384236453201,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 211.583,
+      "cost_us": 207.792,
       "label": "BBS+ sign (issuer)",
-      "p95_us": 233.042,
+      "p95_us": 219.0,
       "provenance": {
         "component": "BBS+ sign (issuer)",
         "kind": "real"
       },
-      "ratio_to_ed25519": 8.324467875831136,
+      "ratio_to_ed25519": 8.188847290640394,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 651.5409999999999,
+      "cost_us": 641.9159999999999,
       "label": "BBS+ signature verify (holder)",
-      "p95_us": 707.583,
+      "p95_us": 697.875,
       "provenance": {
         "component": "BBS+ signature verify (holder)",
         "kind": "real"
       },
-      "ratio_to_ed25519": 25.634063815556516,
+      "ratio_to_ed25519": 25.29718226600985,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 543.7909999999999,
+      "cost_us": 539.083,
       "label": "BBS+ presentation",
-      "p95_us": 600.666,
+      "p95_us": 563.5840000000001,
       "provenance": {
         "component": "BBS+ presentation",
         "kind": "real"
       },
-      "ratio_to_ed25519": 21.394775150489828,
+      "ratio_to_ed25519": 21.24465024630542,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 771.042,
+      "cost_us": 766.3340000000001,
       "label": "BBS+ proof verify",
-      "p95_us": 799.2919999999999,
+      "p95_us": 792.5840000000001,
       "provenance": {
         "component": "BBS+ proof verify",
         "kind": "real"
       },
-      "ratio_to_ed25519": 30.33568084352992,
+      "ratio_to_ed25519": 30.200354679802956,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 688.792,
+      "cost_us": 683.9590000000001,
       "label": "BBS+ proof verify, cached pairings",
-      "p95_us": 721.125,
+      "p95_us": 712.667,
       "provenance": {
         "component": "BBS+ proof verify, cached pairings",
         "kind": "real"
       },
-      "ratio_to_ed25519": 27.09965770940709,
+      "ratio_to_ed25519": 26.954049261083746,
       "source": {
         "iters": 200,
         "kind": "measured_here"

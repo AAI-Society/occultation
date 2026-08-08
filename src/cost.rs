@@ -1,6 +1,23 @@
 use serde::Serialize;
 use std::time::Duration;
 
+/// Serializes a `Duration` as microseconds-as-an-`f64`, under a `*_us` field
+/// name via `#[serde(rename = ...)]` on the field. `Duration`'s default
+/// serialization is `{secs, nanos}`, which is unreadable in JSON output and
+/// inconsistent with the crate's `*_us` convention (`report.rs`'s `cost_us`
+/// / `p95_us`, `pool.rs`'s identical `duration_us` module for `BurstReport`).
+/// `Composed` was the one place left carrying the raw `{secs, nanos}` shape;
+/// `scripts/regen-results.sh` read it as `.composed.budget.nanos` and friends
+/// before this existed.
+pub mod duration_us {
+    use serde::Serializer;
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(d.as_secs_f64() * 1e6)
+    }
+}
+
 /// The per-action latency budget from P05 and the desk study.
 pub const BUDGET: Duration = Duration::from_millis(15);
 
@@ -70,9 +87,18 @@ impl Measurement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum BudgetVerdict {
-    Misses { over: Duration },
-    Marginal { headroom: Duration },
-    Fits { headroom: Duration },
+    Misses {
+        #[serde(rename = "over_us", serialize_with = "duration_us::serialize")]
+        over: Duration,
+    },
+    Marginal {
+        #[serde(rename = "headroom_us", serialize_with = "duration_us::serialize")]
+        headroom: Duration,
+    },
+    Fits {
+        #[serde(rename = "headroom_us", serialize_with = "duration_us::serialize")]
+        headroom: Duration,
+    },
 }
 
 impl std::fmt::Display for BudgetVerdict {
@@ -114,9 +140,13 @@ pub fn judge(total: Duration) -> BudgetVerdict {
 /// A present-and-verify path judged as one path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Composed {
+    #[serde(rename = "present_us", serialize_with = "duration_us::serialize")]
     pub present: Duration,
+    #[serde(rename = "verify_us", serialize_with = "duration_us::serialize")]
     pub verify: Duration,
+    #[serde(rename = "total_us", serialize_with = "duration_us::serialize")]
     pub total: Duration,
+    #[serde(rename = "budget_us", serialize_with = "duration_us::serialize")]
     pub budget: Duration,
     pub verdict: BudgetVerdict,
 }
@@ -300,6 +330,42 @@ mod tests {
                 headroom: Duration::ZERO
             }
         );
+    }
+
+    /// `Composed` used to serialize its `Duration` fields as the default
+    /// `{secs, nanos}`, unreadable and inconsistent with the rest of the
+    /// crate's `*_us` fields (`report.rs`, `pool.rs`'s `BurstReport`).
+    /// `scripts/regen-results.sh` read the old shape via `.present.nanos`
+    /// etc. Pin the new shape so a regression back to the derived default
+    /// (e.g. deleting the `#[serde(rename = ..., serialize_with = ...)]`
+    /// attributes) is caught here rather than only by a shell script diff.
+    #[test]
+    fn composed_serializes_durations_as_microsecond_numbers_not_secs_nanos() {
+        let c = compose(Duration::from_micros(1_234), Duration::from_micros(500));
+        let v = serde_json::to_value(&c).unwrap();
+        assert_eq!(v["present_us"].as_f64().unwrap(), 1_234.0);
+        assert_eq!(v["verify_us"].as_f64().unwrap(), 500.0);
+        assert_eq!(v["total_us"].as_f64().unwrap(), 1_734.0);
+        assert_eq!(v["budget_us"].as_f64().unwrap(), 15_000.0);
+        assert!(
+            v.get("present").is_none(),
+            "the old `present: {{secs, nanos}}` shape must be gone: {v}"
+        );
+    }
+
+    #[test]
+    fn verdict_headroom_and_over_serialize_as_microsecond_numbers() {
+        let marginal = judge(BUDGET - Duration::from_micros(100));
+        let v = serde_json::to_value(marginal).unwrap();
+        assert_eq!(v["verdict"], "marginal");
+        assert_eq!(v["headroom_us"].as_f64().unwrap(), 100.0);
+        assert!(v.get("headroom").is_none(), "{v}");
+
+        let misses = judge(BUDGET + Duration::from_millis(3));
+        let v2 = serde_json::to_value(misses).unwrap();
+        assert_eq!(v2["verdict"], "misses");
+        assert_eq!(v2["over_us"].as_f64().unwrap(), 3_000.0);
+        assert!(v2.get("over").is_none(), "{v2}");
     }
 
     #[test]

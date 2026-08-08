@@ -1,36 +1,21 @@
 {
-  "baseline_round_trip_us": 25.417,
+  "baseline_round_trip_us": 25.458,
   "budget_us": 15000.0,
   "desk_study": [
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 13800000,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 18000000,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 13800.0,
+        "total_us": 18000.0,
         "verdict": {
-          "over": {
-            "nanos": 3000000,
-            "secs": 0
-          },
+          "over_us": 3000.0,
           "verdict": "misses"
         },
-        "verify": {
-          "nanos": 4200000,
-          "secs": 0
-        }
+        "verify_us": 4200.0
       },
       "includes_modelled": false,
       "label": "naive (no pool, no cached pairings)",
-      "note": "13.8 ms and 4.2 ms were each assessed separately against the 15 ms budget and each looked acceptable.",
+      "note": "13.80 ms and 4.20 ms were each assessed separately against the 15.00 ms budget and each looked acceptable.",
       "origin": {
         "citation": "research/Accountable Unlinkable Agent Identity.md, \"Empirical Overhead and Execution Latency at Agent Action Rates\"",
         "kind": "published"
@@ -38,29 +23,14 @@
     },
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 13800000,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 14900000,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 13800.0,
+        "total_us": 14900.0,
         "verdict": {
-          "headroom": {
-            "nanos": 100000,
-            "secs": 0
-          },
+          "headroom_us": 100.0,
           "verdict": "marginal"
         },
-        "verify": {
-          "nanos": 1100000,
-          "secs": 0
-        }
+        "verify_us": 1100.0
       },
       "includes_modelled": false,
       "label": "cached pairings only",
@@ -72,29 +42,14 @@
     },
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 2800000,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 3900000,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 2800.0,
+        "total_us": 3900.0,
         "verdict": {
-          "headroom": {
-            "nanos": 11100000,
-            "secs": 0
-          },
+          "headroom_us": 11100.0,
           "verdict": "fits"
         },
-        "verify": {
-          "nanos": 1100000,
-          "secs": 0
-        }
+        "verify_us": 1100.0
       },
       "includes_modelled": false,
       "label": "pre-computation pool + cached pairings",
@@ -108,29 +63,14 @@
   "measured": [
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 543500,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 1318333,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 537.1669999999999,
+        "total_us": 1301.751,
         "verdict": {
-          "headroom": {
-            "nanos": 13681667,
-            "secs": 0
-          },
+          "headroom_us": 13698.249,
           "verdict": "fits"
         },
-        "verify": {
-          "nanos": 774833,
-          "secs": 0
-        }
+        "verify_us": 764.5840000000001
       },
       "includes_modelled": false,
       "label": "naive (no pool, no cached pairings)",
@@ -141,29 +81,14 @@
     },
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 543500,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 1234208,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 537.1669999999999,
+        "total_us": 1219.375,
         "verdict": {
-          "headroom": {
-            "nanos": 13765792,
-            "secs": 0
-          },
+          "headroom_us": 13780.625,
           "verdict": "fits"
         },
-        "verify": {
-          "nanos": 690708,
-          "secs": 0
-        }
+        "verify_us": 682.208
       },
       "includes_modelled": false,
       "label": "cached pairings only",
@@ -174,29 +99,14 @@
     },
     {
       "composed": {
-        "budget": {
-          "nanos": 15000000,
-          "secs": 0
-        },
-        "present": {
-          "nanos": 4334,
-          "secs": 0
-        },
-        "total": {
-          "nanos": 695042,
-          "secs": 0
-        },
+        "budget_us": 15000.0,
+        "present_us": 4.332,
+        "total_us": 686.5400000000001,
         "verdict": {
-          "headroom": {
-            "nanos": 14304958,
-            "secs": 0
-          },
+          "headroom_us": 14313.460000000001,
           "verdict": "fits"
         },
-        "verify": {
-          "nanos": 690708,
-          "secs": 0
-        }
+        "verify_us": 682.208
       },
       "includes_modelled": false,
       "label": "pool (ESTIMATED) + cached pairings",
@@ -207,5 +117,5 @@
       }
     }
   ],
-  "measured_ratio_to_baseline": 51.868159106110085
+  "measured_ratio_to_baseline": 51.13327834079661
 }

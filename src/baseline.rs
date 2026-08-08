@@ -90,6 +90,32 @@ mod tests {
         assert_ne!(a.to_bytes(), c.to_bytes());
     }
 
+    /// `round_trip()` is the denominator of every ratio this tool publishes,
+    /// including the paper's headline multiple. Replacing its body with
+    /// `self.sign.median` alone, or with `self.verify.median` alone, survives
+    /// every other test and CI: nothing else pins the sum against its two
+    /// halves. The doc comment on `round_trip` says comparing against
+    /// verification alone "would flatter the anonymous scheme by a factor of
+    /// two" — this is the assertion that makes that a tested claim rather
+    /// than prose.
+    #[test]
+    fn round_trip_is_sign_plus_verify_not_either_half_alone() {
+        let b = measure_baseline(7, 200).unwrap();
+        assert_eq!(
+            b.round_trip(),
+            b.sign.median + b.verify.median,
+            "round_trip must be the sum of both halves"
+        );
+        assert!(
+            b.round_trip() > b.sign.median,
+            "round_trip must exceed sign alone"
+        );
+        assert!(
+            b.round_trip() > b.verify.median,
+            "round_trip must exceed verify alone"
+        );
+    }
+
     #[test]
     fn verification_costs_more_than_signing() {
         // True of Ed25519 everywhere. If it inverts, the harness is measuring
