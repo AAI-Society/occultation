@@ -1,4 +1,4 @@
-use crate::harness::{measure, Sample};
+use crate::harness::{try_measure, HarnessError, Sample};
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -35,16 +35,19 @@ impl Baseline {
     }
 }
 
-pub fn measure_baseline(seed: u64, iters: u32) -> Baseline {
+/// `iters` reaches here from `--iters` on the command line, so this returns a
+/// `Result` rather than using the panicking `measure`. The plan's global
+/// constraint is no panics on malformed input, and zero is malformed input.
+pub fn measure_baseline(seed: u64, iters: u32) -> Result<Baseline, HarnessError> {
     let (sk, vk) = baseline_keypair(seed);
     let sig = sk.sign(BASELINE_MESSAGE);
-    Baseline {
-        sign: measure("Ed25519 sign", iters, || sk.sign(BASELINE_MESSAGE)),
-        verify: measure("Ed25519 verify", iters, || {
+    Ok(Baseline {
+        sign: try_measure("Ed25519 sign", iters, || sk.sign(BASELINE_MESSAGE))?,
+        verify: try_measure("Ed25519 verify", iters, || {
             vk.verify_strict(BASELINE_MESSAGE, &sig)
                 .expect("baseline signature verifies")
-        }),
-    }
+        })?,
+    })
 }
 
 #[cfg(test)]
@@ -53,9 +56,15 @@ mod tests {
 
     #[test]
     fn the_baseline_signs_and_verifies_for_real() {
-        let b = measure_baseline(7, 100);
+        let b = measure_baseline(7, 100).unwrap();
         assert_eq!(b.sign.iters, 100);
         assert!(b.round_trip() > Duration::ZERO);
+    }
+
+    #[test]
+    fn zero_iterations_is_an_error_rather_than_a_panic() {
+        // `--iters 0` reaches this function from the command line in Task 7.
+        assert!(measure_baseline(7, 0).is_err());
     }
 
     #[test]
@@ -85,7 +94,7 @@ mod tests {
     fn verification_costs_more_than_signing() {
         // True of Ed25519 everywhere. If it inverts, the harness is measuring
         // the wrong closure.
-        let b = measure_baseline(7, 500);
+        let b = measure_baseline(7, 500).unwrap();
         assert!(
             b.verify.median > b.sign.median,
             "sign {:?} verify {:?}",
