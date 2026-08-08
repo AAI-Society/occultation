@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="occultation">
+  <title>occultation</title>
+  <desc>One body passing in front of another and hiding it, leaving a crescent — which is the unlinkability property itself: the thing is still there, and you cannot see it.</desc>
+
+  <rect width="256" height="256" rx="52" fill="#0A0A0A"/>
+
+  <!-- the path the occulting body arrives along -->
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#CFFF04" stroke-width="4" opacity="0.32"/>
+
+  <!-- the occulted body, and the occulter cut out of it: what remains is the crescent -->
+  <mask id="hidden">
+    <circle cx="112" cy="128" r="62" fill="#fff"/>
+    <circle cx="158" cy="106" r="62" fill="#000"/>
+  </mask>
+  <circle cx="112" cy="128" r="62" fill="#CFFF04" mask="url(#hidden)"/>
+
+  <!-- the occulter itself: present, and dark -->
+  <circle cx="158" cy="106" r="62" fill="none" stroke="#CFFF04" stroke-width="4" opacity="0.32"/>
+</svg>
