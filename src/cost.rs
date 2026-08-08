@@ -133,8 +133,8 @@ pub fn compose(present: Duration, verify: Duration) -> Composed {
     }
 }
 
-const DESK: &str = "research/Accountable Unlinkable Agent Identity.md, \
-                    \"Empirical Overhead and Execution Latency at Agent Action Rates\"";
+pub const DESK: &str = "research/Accountable Unlinkable Agent Identity.md, \
+                        \"Empirical Overhead and Execution Latency at Agent Action Rates\"";
 
 /// A set of costs for one profile of the construction.
 #[derive(Clone, Debug, Serialize)]

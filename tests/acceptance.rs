@@ -1,5 +1,5 @@
 use occultation::bench::{composed_report, run_bench, BenchOptions};
-use occultation::cost::{BudgetVerdict, BUDGET};
+use occultation::cost::{judge, BudgetVerdict, BUDGET};
 use std::time::Duration;
 
 /// Acceptance test 1, part 1 — the paper's headline correction.
@@ -19,7 +19,7 @@ fn the_composed_path_misses_the_budget_without_pre_computation() {
     let report = composed_report(&costs);
 
     let naive = &report.desk_study[0];
-    assert!(naive.published);
+    assert!(naive.origin.is_published());
     assert_eq!(naive.composed.present, Duration::from_micros(13_800));
     assert_eq!(naive.composed.verify, Duration::from_micros(4_200));
     assert_eq!(naive.composed.total, Duration::from_micros(18_000));
@@ -79,6 +79,13 @@ fn cached_pairings_alone_are_marginal_rather_than_a_pass() {
 
 /// The property that must hold for measured numbers too, on any host: the
 /// budget is applied to a sum, never to a half.
+///
+/// `assert_eq!(total, present + verify)` alone is a tautology — `compose`
+/// defines `total` that way — and worse, it does not test what this test's
+/// name claims. A row judged on one half would not show up as a broken sum;
+/// it would show up as `compose(present, ZERO)`, and the tautology would pass.
+/// The last assertion is the one that bites: on the desk study's naive row,
+/// `judge(present)` is `Fits` while `judge(total)` is `Misses`.
 #[test]
 fn no_verdict_is_ever_issued_against_half_a_path() {
     let costs = run_bench(&BenchOptions {
@@ -91,6 +98,18 @@ fn no_verdict_is_ever_issued_against_half_a_path() {
         assert_eq!(
             row.composed.total,
             row.composed.present + row.composed.verify
+        );
+        assert!(
+            row.composed.present > Duration::ZERO && row.composed.verify > Duration::ZERO,
+            "{}: a half-path row would have a zero half",
+            row.label
+        );
+        assert_eq!(row.composed.verdict, judge(row.composed.total));
+        assert_ne!(
+            row.composed.verdict,
+            judge(row.composed.present),
+            "{}: the verdict matches a verdict on the presentation alone",
+            row.label
         );
     }
 }

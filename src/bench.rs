@@ -342,14 +342,37 @@ impl PrimitiveCosts {
 }
 
 use crate::cost::{compose, fmt_ms, Composed, CostProfile};
+use serde::Serialize;
+
+/// Where a composed row's two halves came from.
+///
+/// Three-valued, not a boolean, and it carries the citation. A boolean would
+/// force the estimated pooled row into one of the two real buckets, and
+/// `published: false` on a derived number asserts in machine-readable form
+/// that this host measured it. That is a smaller version of the mistake this
+/// whole command exists to correct — the desk study presented other people's
+/// benchmarks as characterising its own stack — so the tool must not commit
+/// it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowOrigin {
+    MeasuredHere,
+    Published { citation: &'static str },
+    Estimated { basis: &'static str },
+}
+
+impl RowOrigin {
+    pub fn is_published(&self) -> bool {
+        matches!(self, RowOrigin::Published { .. })
+    }
+}
 
 /// One composition of a present-and-verify path, judged as a whole.
 #[derive(Debug)]
 pub struct ComposedRow {
     pub label: String,
     pub composed: Composed,
-    /// True when both halves came from a publication rather than this host.
-    pub published: bool,
+    pub origin: RowOrigin,
     pub note: Option<String>,
 }
 
@@ -371,7 +394,9 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
         ComposedRow {
             label: "naive (no pool, no cached pairings)".into(),
             composed: compose(d.present_naive.cost, d.verify_naive.cost),
-            published: true,
+            origin: RowOrigin::Published {
+                citation: crate::cost::DESK,
+            },
             note: Some(
                 "13.8 ms and 4.2 ms were each assessed separately against the \
                  15 ms budget and each looked acceptable."
@@ -381,7 +406,9 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
         ComposedRow {
             label: "cached pairings only".into(),
             composed: compose(d.present_naive.cost, d.verify_cached.cost),
-            published: true,
+            origin: RowOrigin::Published {
+                citation: crate::cost::DESK,
+            },
             note: Some(
                 "Under the limit with 100 us to spare, which leaves nothing for \
                  application work, network time or evidence writing."
@@ -391,7 +418,9 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
         ComposedRow {
             label: "pre-computation pool + cached pairings".into(),
             composed: compose(d.present_pooled.cost, d.verify_cached.cost),
-            published: true,
+            origin: RowOrigin::Published {
+                citation: crate::cost::DESK,
+            },
             note: Some(
                 "The only composition that fits. Pre-computation is load-bearing, \
                  not an optimization."
@@ -410,21 +439,26 @@ pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
         ComposedRow {
             label: "naive (no pool, no cached pairings)".into(),
             composed: compose(present, verify_uncached),
-            published: false,
+            origin: RowOrigin::MeasuredHere,
             note: None,
         },
         ComposedRow {
             label: "cached pairings only".into(),
             composed: compose(present, verify_cached),
-            published: false,
+            origin: RowOrigin::MeasuredHere,
             note: None,
         },
         ComposedRow {
-            label: "pre-computation pool (estimated) + cached pairings".into(),
+            label: "pool (ESTIMATED) + cached pairings".into(),
             composed: compose(pooled_estimate, verify_cached),
-            published: false,
+            origin: RowOrigin::Estimated {
+                basis: "two hash-to-scalar operations; `occultation pool` measures it properly",
+            },
             note: Some(
-                "Pooled presentation is estimated here; `occultation pool` measures it.".into(),
+                "The pooled presentation here is a crude estimate, not a measurement, \
+                 and it is almost certainly too low: it implies a 99% reduction where \
+                 the desk study's own pooled figure implies 80%."
+                    .into(),
             ),
         },
     ];
@@ -449,23 +483,62 @@ impl ComposedReport {
         let mut out =
             String::from("The composed present-and-verify path against a 15 ms budget\n\n");
 
-        out.push_str("PUBLISHED — desk study figures, not measured on this stack\n");
+        out.push_str(&format!(
+            "PUBLISHED — not measured on this stack. Source: {}\n",
+            crate::cost::DESK
+        ));
         out.push_str(&Self::rows(&self.desk_study));
-        out.push_str(
-            "\nThe correction: presentation and verification were assessed \
-             separately against\nthe budget and each looked acceptable. Their sum is \
-             18.00 ms, which is over.\n",
-        );
+        out.push_str(&format!(
+            "\nThe correction: presentation ({p}) and verification ({v}) were assessed \
+             separately\nagainst the budget and each looked acceptable. Their sum is \
+             {t}, which is over.\n",
+            p = fmt_ms(self.desk_study[0].composed.present),
+            v = fmt_ms(self.desk_study[0].composed.verify),
+            t = fmt_ms(self.desk_study[0].composed.total),
+        ));
 
         out.push_str("\nmeasured here\n");
         out.push_str(&Self::rows(&self.measured));
+        // Derived, not asserted. A hardcoded "this host is faster" would print
+        // identically on a host where it is false.
+        let published_total = self.desk_study[0].composed.total.as_secs_f64();
+        let measured_total = self.measured[0].composed.total.as_secs_f64();
+        let direction = if measured_total < published_total {
+            "cheaper"
+        } else {
+            "dearer"
+        };
+        let factor = (published_total / measured_total).max(measured_total / published_total);
         out.push_str(&format!(
-            "\nMeasured and published figures differ substantially — this host's \
-             primitives are\nfaster than the ones the desk study cites. The composition \
-             error is unaffected:\nit is an error in arithmetic, not in hardware. \
-             Composed BBS+ costs {:.0}x an\nEd25519 sign-and-verify round trip of {} here.\n",
-            self.measured_ratio,
-            fmt_ms(self.baseline_round_trip)
+            "\nMeasured and published figures differ: the composed path is {factor:.0}x \
+             {direction}\nhere than the desk study's figures imply. The composition error \
+             is unaffected —\nit is an error in arithmetic, not in hardware. Composed BBS+ \
+             costs {ratio:.0}x an\nEd25519 sign-and-verify round trip of {rt} here.\n",
+            ratio = self.measured_ratio,
+            rt = fmt_ms(self.baseline_round_trip)
+        ));
+
+        // The divergence is in shape as well as magnitude, and only one
+        // optimization appears on both sides of the table. A uniformly faster
+        // host would preserve the desk study's ratio; this one does not, and
+        // saying only "smaller" would let a reader assume "proportionally
+        // smaller".
+        let (dp, dc) = (
+            self.desk_study[0].composed.verify.as_secs_f64(),
+            self.desk_study[1].composed.verify.as_secs_f64(),
+        );
+        let (mp, mc) = (
+            self.measured[0].composed.verify.as_secs_f64(),
+            self.measured[1].composed.verify.as_secs_f64(),
+        );
+        out.push_str(&format!(
+            "\nThe divergence is not uniform. Cached pairings are the one optimization \
+             measured\non both sides: the desk study reports them saving {:.0}% of \
+             verification, and they\nsave {:.0}% here. So the measured block does not \
+             corroborate the desk study's\noptimization structure either, which is a \
+             second finding rather than noise.\n",
+            (1.0 - dc / dp) * 100.0,
+            (1.0 - mc / mp) * 100.0
         ));
         out
     }
@@ -497,7 +570,7 @@ impl ComposedReport {
                 .map(|r| {
                     serde_json::json!({
                         "label": r.label,
-                        "published": r.published,
+                        "origin": r.origin,
                         "composed": r.composed,
                         "note": r.note,
                     })
@@ -531,8 +604,8 @@ mod composed_tests {
     #[test]
     fn the_report_carries_both_profiles() {
         let r = composed_report(&costs());
-        assert!(r.desk_study.iter().all(|row| row.published));
-        assert!(r.measured.iter().all(|row| !row.published));
+        assert!(r.desk_study.iter().all(|row| row.origin.is_published()));
+        assert!(r.measured.iter().all(|row| !row.origin.is_published()));
         assert_eq!(r.desk_study.len(), 3, "naive, cached-only, pool+cached");
         assert_eq!(r.measured.len(), 3);
     }
@@ -585,6 +658,10 @@ mod composed_tests {
         let out = composed_report(&costs()).render();
         assert!(out.contains("separately"), "must name the error: {out}");
         assert!(out.contains("18.00 ms"), "must show the sum: {out}");
+        assert!(
+            out.contains("Accountable Unlinkable"),
+            "the citation must reach the reader: {out}"
+        );
     }
 
     #[test]
@@ -618,6 +695,34 @@ mod composed_tests {
         assert!(
             ratio > floor,
             "composed BBS+ was only {ratio:.1}x Ed25519 (floor {floor})"
+        );
+    }
+
+    /// The JSON form must carry provenance as data, not just as prose in
+    /// `render()`. Machine consumers do not read the table's headings, so
+    /// each of the three `RowOrigin` variants must be distinguishable in
+    /// `to_json` output: a published row keeps its citation, a measured row
+    /// declares itself, and an estimated row cannot be mistaken for either.
+    #[test]
+    fn to_json_carries_the_origin_kind_for_each_of_the_three_variants() {
+        let r = composed_report(&costs());
+        let v = r.to_json();
+
+        let published = &v["desk_study"][0]["origin"];
+        assert_eq!(published["kind"], "published");
+        assert_eq!(published["citation"], crate::cost::DESK);
+
+        let measured = &v["measured"][0]["origin"];
+        assert_eq!(measured["kind"], "measured_here");
+
+        let estimated = &v["measured"][2]["origin"];
+        assert_eq!(estimated["kind"], "estimated");
+        assert!(
+            estimated["basis"]
+                .as_str()
+                .unwrap()
+                .contains("hash-to-scalar"),
+            "an estimate must say what it is derived from: {estimated}"
         );
     }
 }
