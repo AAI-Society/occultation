@@ -129,45 +129,49 @@ contribution.}}}
 \end{center}
 \vspace{-0.5em}
 \noindent{\small
-A desk study assessed two numbers against a \deskbudget{}
-per-action budget for anonymous agent credentials --- BBS+ presentation at
-about \deskpresentnaive{}, verification at about \deskverifynaive{}
---- and called each acceptable, because each is below \deskbudget{}
-on its own. Summed, they are \desktotalnaive{}, which is over. With
-cached pairing pre-computation the sum is \desktotalcached{}: under the
-limit by \deskheadroomcached{}, a margin this paper's tool reports as
+An agent presents an anonymous credential and a relying party verifies it,
+and the standard gives the two of them together one \deskbudget{} action
+budget. A desk study checked them one at a time. BBS+ presentation, about
+\deskpresentnaive{}: under. Verification, about \deskverifynaive{}: under.
+Two halves under budget, so the design fits --- except that the action pays
+for both, and the sum is \desktotalnaive{}, over by \deskovernaive{}. With
+cached pairing pre-computation the sum is \desktotalcached{}, under the limit
+by \deskheadroomcached{}, which this paper's tool reports as
 \texttt{MARGINAL} rather than a pass, because \deskheadroomcached{} is not
 headroom for the application, the network, or writing the evidence record.
 We built \occultation{}, a Rust tool that assesses presentation and
 verification as one composed path rather than two separate ones, over real
-BBS+ signatures on BLS12-381 and a real Ed25519 baseline. On our hardware the
-absolute numbers are roughly an order of magnitude smaller than the desk
-study's, and --- the finding the magnitude alone would hide --- the
-\emph{shape} of the correction survives the hardware change while the shape
-of an unrelated optimization does not: cached pairings save
-\deskcachedsavingpct{} of verification in the desk study's figures and
-\measuredcachedsavingpct{} of it in ours. The composition error is
-arithmetic, not a property of any one machine. Pre-computation is what makes
+BBS+ signatures on BLS12-381 and a real Ed25519 baseline. Our hardware is
+much faster --- the composed path costs \measureddivergencefactor{}$\times$
+less here than the desk study's published figures imply, or
+\measureddivergencefactorexclescrow{}$\times$ once the modelled escrow tag is
+excluded from both sides --- and none of that touches the mistake, because
+the mistake is in the addition and not in the silicon. What the magnitude
+would hide is that the \emph{shape} of the correction survives the hardware
+change while the shape of an unrelated optimization does not: cached pairings
+save \deskcachedsavingpct{} of verification in the desk study's figures and
+\measuredcachedsavingpct{} of it in ours. Pre-computation is what makes
 the desk study's own published figures fit the budget at all, which converts
 a performance question into a security one: what happens when the
 pre-computed pool runs out under burst?
 We simulate it. The pool stalls; it does not reuse, and reuse is not
 configurable, because we show precisely what reuse costs --- an observer of
 two presentations sharing one blinding factor recovers the signature scalar
-and every undisclosed attribute by subtraction, which our test suite performs
-rather than merely asserts. Stalling is not free either: under a sustained
+and every undisclosed attribute by subtraction, an extraction our test suite
+performs rather than merely asserts. Stalling is not free either: under a
+sustained
 \poolburstratesi{} burst against a $\sim$\poolrefillratesi{} refill rate, the
 worst response in a \poolwindow{} window is \poolamplification{}$\times$ an
 idle one, a timing side channel with a duration-invariant signature ---
 overload factor \pooloverloadfactor{}$\times$, growth per request
 \poolgrowthperrequest{}$\times$ an idle response, opening at request
-\poolonsetrequest{}. Separately, we partition a fleet description --- a
-synthetic, hand-authored fixture, not telemetry from any live fleet --- to
-see how large an anonymity set the hardware attestation layer actually
-leaves standing: \anonfleetsize{} identical hosts, after six weeks of the
+\poolonsetrequest{}. Separately, we ask how much of the unlinkability the
+hardware layer underneath hands straight back. Partitioning a fleet
+description --- a synthetic, hand-authored fixture, not telemetry from any
+live fleet --- \anonfleetsize{} identical hosts, after six weeks of the
 kind of operational drift in patch level and microcode such a fleet would
-accumulate, partition into \anonconfigs{} distinguishable groups of
-\anonsizes{} --- \anonsingletons{} host alone on its configuration before
+accumulate, fall into \anonconfigs{} distinguishable groups of
+\anonsizes{}. \anonsingletons{} host is alone on its configuration before
 any credential is even presented. Effective set size \anoneffectiveset{} of
 \anonfleetsize{}; entropy \anonentropy{}. Two of the five layers this paper's
 subject construction proposes --- hardware attestation and threshold escrow
@@ -194,43 +198,68 @@ everywhere it appears.}
 \section{The Problem}
 \label{sec:intro}
 
-The Proof-of-Control standard's identity domain, C5, has six requirements
---- the thinnest of its six domains --- and carries open issue
-2~\cite{povocopenissues}: whether an autonomous agent's actions can be
-independently verifiable and attributable when it matters, while being
-unlinkable across relying parties the rest of the time. A working-group
-member raised it in the plainest possible terms: enterprises need to deploy
-agents without disclosing customer PII or corporate identity to third-party
-vendors, and the best way to secure information is not to hand it out
-unnecessarily.
+An enterprise sends a software agent out to buy something from a vendor. The
+agent presents a credential, the vendor checks it, the order goes through.
+Nobody did anything wrong.
+
+Now ask what the vendor learned.
+
+It learned which company the agent belongs to, because the credential said
+so. It learned which employee set the agent going, because the evidence
+record the standard asks for carries an \texttt{initiating\ub user} field. It
+can count how many times that same agent came back this month, because every
+action is bound into a hash chain whose roots are anchored where anybody can
+read them. And it can line all of that up against every other agent from the
+same firm, because the same identifiers run through all of them. By the end
+of the quarter the vendor holds a running account of another company's
+internal operations, assembled as a by-product of checking purchase orders.
+
+The vendor had one question: is this agent allowed to do this. None of the
+rest was needed to answer it.
+
+That gap is open issue 2 in C5, the identity domain of the Proof-of-Control
+standard~\cite{povocopenissues} --- six requirements, the thinnest of the
+standard's six domains. Can an autonomous agent's actions be independently
+verifiable and attributable when it matters, and unlinkable across relying
+parties the rest of the time? A working-group member raised it in the
+plainest possible terms: enterprises need to deploy agents without disclosing
+customer PII or corporate identity to third-party vendors, and the best way
+to secure information is not to hand it out unnecessarily.
 
 The tension is structural, not incidental. Every other part of the standard
-this domain sits inside pushes toward \emph{more} identifiable evidence: an
-explicit \texttt{agent\ub id}, an \texttt{initiating\ub user}, a hash chain
-that links every action to every action before it, anchors published where
-anyone can see them. A hash-chained, publicly anchored log of an agent's
-actions is close to the worst case for unlinkability: it is a permanent,
-ordered, cryptographically bound dossier. Making that unlinkable is not a
-matter of omitting a field from a record. It requires a credential layer
-whose presentations do not link to each other, sitting underneath a log
-layer built, by design, to chain everything together.
+this domain sits inside pulls the other way, toward \emph{more} identifiable
+evidence: an explicit \texttt{agent\ub id}, an \texttt{initiating\ub user}, a
+hash chain that links every action to every action before it, anchors
+published where anyone can see them. If you set out to design the worst
+possible object for unlinkability you would land somewhere near that: a
+permanent, ordered, cryptographically bound dossier. You do not fix it by
+leaving a field out of a record. You need a credential layer whose
+presentations do not link to each other, sitting underneath a log layer
+built, by design, to chain everything together.
 
-A desk study assembled a concrete five-layer answer --- hardware
-attestation, an anonymous credential, an evidence log, a threshold escrow
-for accountability, and a transport layer --- and estimated what it would
-cost, using published benchmarks of other people's hardware rather than
-measuring anything. The estimate contained an arithmetic error large enough to flip
-its own headline conclusion, and finding that error is most of what this
-paper is about. The desk study assessed presentation and verification
-against the standard's \deskbudget{} per-action budget
-\emph{separately}: presentation at about \deskpresentnaive{}, under
-budget; verification at about \deskverifynaive{}, also under budget.
-Both halves passing is not the same claim as the sum passing, and the sum
---- \desktotalnaive{} --- does not. No cryptographic assumption in the
-desk study is wrong. The mistake is in the addition, and it survives being
-pointed out only because presentation and verification happen on different
-machines at different times, which makes it easy to grade them on separate
-report cards.
+The cryptography for that layer is not new. The anonymous-credential line
+runs back two decades, and Section~\ref{sec:related} walks it. So why is
+nobody running it here? Because nobody had measured what it costs at agent
+action rates. One desk study estimated it: a concrete five-layer answer ---
+hardware attestation, an anonymous credential, an evidence log, a threshold
+escrow for accountability, and a transport layer --- priced from published
+benchmarks of other people's hardware rather than from anything it ran. We
+checked the arithmetic. It contains an error large enough to flip the study's
+own headline conclusion, and finding that error is most of what this paper is
+about.
+
+Here is the error. The standard allows \deskbudget{} per action. The desk
+study weighed presentation against that budget: about \deskpresentnaive{},
+under. Then it weighed verification: about \deskverifynaive{}, also under.
+Two halves under budget, so the design fits.
+
+An agent that presents a credential and has it verified pays for both.
+\desktotalnaive{}. That is over.
+
+No cryptographic assumption in the desk study is wrong. The mistake is in the
+addition, and it survives being pointed out only because presentation and
+verification happen on different machines at different times, which makes it
+easy to grade them on separate report cards.
 
 This paper reports what happens when that composed path, and the two
 security questions the desk study's own numbers raise but do not answer ---
@@ -238,15 +267,22 @@ whether the fix for the composition error is itself sound, and how large an
 anonymity set the hardware layer actually leaves standing --- are measured
 rather than estimated.
 
+\paragraph{One thing we are not claiming.} Two of the five layers below are
+stubs with no security in them whatsoever. Our BBS+ is real cryptography that
+will not interoperate with anybody else's. The fleet whose anonymity we
+partition is a file we wrote by hand, not telemetry from a live one. Every
+figure in this paper sits inside those limits, and each limit is repeated in
+the sentence that states the number rather than parked in a footnote.
+
 % ================================================================
 \section{What Others Have Built}
 \label{sec:related}
 
-The mechanisms this design needs are mature. Applying them to a
-machine-speed, hash-chained, publicly anchored agent log is not, and every
-citation in this section is doing double duty: establishing that the
-primitive exists and is trusted, and marking the gap between that primitive
-and this application.
+Every mechanism this design needs already exists and is trusted. Pointing
+them at a machine-speed, hash-chained, publicly anchored agent log is the
+part nobody has done. So every citation below does double duty: it shows the
+primitive is real, and it marks the distance between that primitive and this
+use of it.
 
 \paragraph{Hardware attestation without a platform identifier.} Direct
 Anonymous Attestation~\cite{daa} lets a TPM prove that \emph{some} valid TPM
@@ -306,11 +342,11 @@ than leaving it as a silent gap.
 \paragraph{Where this paper sits.} None of the above measures what BBS+
 costs at agent action rates, composed as a single present-and-verify path,
 against a fixed real-time budget, on real hardware. That measurement --- and
-the arithmetic error it corrects --- is this paper's contribution. The
-security question the correction's own fix raises, whether a pre-computation
-pool is sound under burst, appears nowhere in this literature either,
-because in most of it pre-computation is a performance detail rather than
-the thing standing between the design and its own latency budget.
+the arithmetic error it corrects --- is what this paper adds. Nor does any of
+it ask whether a pre-computation pool holds up under burst, which is the
+security question the fix for that error raises. In most of this literature
+pre-computation is a performance detail. Here it is the thing standing
+between the design and its own latency budget.
 
 % ================================================================
 \section{The Construction We Measured}
@@ -351,14 +387,14 @@ IP and timing \\
 \end{tabular}
 \end{table}
 
-Not all five layers are implemented, and none of the three that are touched
-here are implemented to the same standard. Table~\ref{tab:boundary} states
-the boundary exactly, and it is required to match \occultation{}'s
-\texttt{README.md} member for member: a paper's own claim about what it
-measures or models should be checked against the tool's documentation
-directly rather than assumed from the fact that Table~\ref{tab:layers} names
-a stub, because not every gap between a claim and the code behind it is
-about a modelled component specifically.
+Not all five are implemented, and the three we touch are not implemented to
+the same standard as each other. Table~\ref{tab:boundary} draws the line
+exactly, and it is required to match \occultation{}'s \texttt{README.md}
+member for member. That requirement is deliberate. A reader should be able to
+check what a paper says it measured against the tool's own documentation,
+rather than infer it from the fact that Table~\ref{tab:layers} labelled
+something a stub --- because not every gap between a claim and the code
+behind it is about a modelled component.
 
 \begin{table}[h]
 \centering\small
@@ -398,238 +434,229 @@ security. \\
 \end{tabular}
 \end{table}
 
-Three of these five rows are what the rest of this paper touches: hardware
-attestation, the agent credential, and accountability. Of
-Section~\ref{sec:results}'s figures, only Table~\ref{tab:primitives} --- the
-agent-credential row, not explicitly labelled \texttt{MODELLED} --- rests on
-real BLS12-381 pairing arithmetic and a real BBS+ implementation timed on
-real hardware. The section's other figures are not timings on this hardware
-at all: Table~\ref{tab:composed}'s desk-study columns are the published
-study's own constants, never run here; Table~\ref{tab:anonymity} partitions
-a fixed TOML fixture, which involves no cryptography to time; and
-Section~\ref{sec:results-pool}'s burst simulation runs on operator-supplied
-cost inputs, not a live measurement. Every figure that touches ECDAA or
-threshold escrow --- the hardware-attestation and accountability rows --- is
-a cost estimate from a stub with no cryptographic content, and this paper
-does not use either stub to support any claim about security --- only,
-where unavoidable, about cost, and always labelled.
+Three of the five rows are what the rest of this paper touches: hardware
+attestation, the agent credential, and accountability. It is worth being
+blunt about how little of Section~\ref{sec:results} is a timing on this
+machine. Exactly one table is: Table~\ref{tab:primitives}, the
+agent-credential row, real BLS12-381 pairing arithmetic and a real BBS+
+implementation on real hardware. Nothing else in the section is.
+Table~\ref{tab:composed}'s desk-study columns are the published study's own
+constants, never run here. Table~\ref{tab:anonymity} partitions a fixed TOML
+file, which has no cryptography in it to time.
+Section~\ref{sec:results-pool}'s burst figures come out of a simulation fed
+operator-supplied costs. And every figure that touches ECDAA or threshold
+escrow --- the hardware-attestation and accountability rows --- is a cost
+estimate produced by a stub with no cryptographic content in it. We use
+neither stub to support any claim about security. Only, where unavoidable,
+about cost, and always labelled.
 
-The escrow stub's absence from the real half of Table~\ref{tab:boundary} is
-deliberate, not an oversight, for the reason Section~\ref{sec:related}'s
-escrow literature makes plain: a $k$-of-$n$ threshold ElGamal tag with a NIZK
-of correct encryption is exactly the kind of machinery \emph{Keys Under
-Doormats}~\cite{keysunderdoormats} and the Clipper Chip's documented
-failure~\cite{clipperchip} warn is easy to build and hard to build safely
---- the danger is in the governance surrounding a working implementation as
-much as in the cryptography itself, and a stub built only to be
-cost-representative cannot accidentally be mistaken for a governance
-guarantee this paper has not evaluated. Building and asserting the security
-of a real threshold-opening path is future work, not something a
-cost-measurement tool should attempt as a side effect.
+Leaving escrow out of the real half of Table~\ref{tab:boundary} is a choice,
+not an oversight, and Section~\ref{sec:related}'s escrow literature is the
+reason. A $k$-of-$n$ threshold ElGamal tag with a NIZK of correct encryption
+is exactly the machinery \emph{Keys Under Doormats}~\cite{keysunderdoormats}
+and the Clipper Chip's documented failure~\cite{clipperchip} warn is easy to
+build and hard to build safely: the danger sits in the governance around a
+working implementation as much as in the cryptography. A stub built only to
+carry a representative cost cannot be mistaken for a governance guarantee we
+never evaluated. Building a real threshold-opening path and asserting its
+security is future work. It is not something a cost-measurement tool should
+do as a side effect.
 
-The evidence-log layer in Table~\ref{tab:layers} is not implemented at all;
-it is P05's open questions 1 and 2 (Section~\ref{sec:open}), and nothing in
-this paper's measurements bears on it. The transport layer in
-Table~\ref{tab:layers} is likewise not implemented, but it is a separate,
-untouched omission rather than one of those two open questions;
-Section~\ref{sec:open} names it on its own.
+The evidence-log layer of Table~\ref{tab:layers} is not implemented at all.
+It is P05's open questions 1 and 2 (Section~\ref{sec:open}), and nothing we
+measured bears on it. The transport layer is not implemented either, but it
+is a separate omission rather than one of those two questions, and
+Section~\ref{sec:open} names it on its own instead of folding it in.
 
 % ================================================================
 \section{Measuring the Composed Path}
 \label{sec:method}
 
-The desk study's error was structural: it judged two numbers against one
-budget by comparing each number to the budget separately. \occultation{}'s
-\texttt{bench --composed} command exists specifically to make that
-structural mistake unavailable. It composes a presentation cost and a
-verification cost into a single \texttt{Composed} value, sums them, and
-judges the sum --- never a half --- against the \deskbudget{}
-budget defined once, in \texttt{src/cost.rs}, as the single source of truth
-\texttt{bench} reads (\texttt{pool} and \texttt{anonymity} answer different
-questions and do not consult it). A verdict is one of three values, not two:
-\texttt{Fits}, \texttt{Misses}, or --- the variant that earns its place ---
-\texttt{Marginal}, for a composition that is under budget by no more than
-5\,\% of it. Without that third value, \desktotalcached{} against a
-\deskbudget{} budget reports as a pass, which is exactly the
-desk study's own conclusion about its cached-pairing figure and exactly the
-conclusion this tool exists to correct.
+The desk study's mistake was structural. It had one budget and two numbers,
+and it held each number up against the budget on its own.
+\occultation{}'s \texttt{bench --composed} exists to make that move
+unavailable. It folds a presentation cost and a verification cost into one
+\texttt{Composed} value, adds them, and judges the sum --- never a half ---
+against the \deskbudget{} budget. That budget is written down once, in
+\texttt{src/cost.rs}, and \texttt{bench} is the only command that reads it;
+\texttt{pool} and \texttt{anonymity} answer different questions and never
+consult it. A verdict has three values rather than two: \texttt{Fits},
+\texttt{Misses}, and the one that earns its place, \texttt{Marginal}, for a
+composition under budget by no more than 5\,\% of it. Drop that third value
+and \desktotalcached{} against a \deskbudget{} budget prints as a pass ---
+which is the desk study's own verdict on its cached-pairing figure, and the
+verdict this tool exists to refuse.
 
-\texttt{bench --composed} reports two profiles side by side, never merged.
-The \emph{desk-study} profile reproduces the published figures verbatim,
-tagged \texttt{PUBLISHED}, with their citation --- these numbers are
-constants, not measured on this stack, and they are reported so that the
-composition arithmetic is checkable by a third party without access to our
-hardware. The \emph{measured} profile times the same operations, here, with
-a seeded RNG and a median of many iterations, tagged \texttt{measured here}.
-The two profiles are expected to disagree in magnitude, because they come
-from different silicon, and Section~\ref{sec:results} reports exactly how
-much and in what shape they disagree.
+\texttt{bench --composed} prints two profiles side by side and never merges
+them. The \emph{desk-study} profile repeats the published figures verbatim,
+tagged \texttt{PUBLISHED}, with the citation attached: constants, not
+measured on this stack, reported so that anybody can check the composition
+arithmetic without borrowing our hardware. The \emph{measured} profile times
+the same operations here, seeded RNG, median of many iterations, tagged
+\texttt{measured here}. They are supposed to disagree in magnitude --- they
+came off different silicon --- and Section~\ref{sec:results} says by how
+much and in what shape.
 
-One row in the measured profile carries a third tag, \texttt{ESTIMATED},
-and it needs a precise statement of what it is not. Nothing in
-\occultation{} measures a pooled presentation's \emph{online} phase directly
---- the work left to do once a blinding factor has already been pre-computed
-and pulled from the pool. The pooled row in the measured composed-path table
-is derived from a cheaper proxy, two hash-to-scalar operations, standing in
-for the challenge hash and field-arithmetic responses a real online phase
-would perform. \texttt{occultation pool}, which is the command that actually
-exercises the pool under load (Section~\ref{sec:pool}), does not close this
-gap either: its \texttt{--online} cost defaults to this identical estimate
-when the operator does not supply one. So the estimate and the pool
-simulation are not independent evidence for each other, and the row's own
-note says the estimate is almost certainly too low --- it implies a
-\pooledreductionpct{} reduction in presentation cost where the desk study's
-own pooled figure implies \deskpooledreductionpct{}. We report it because
-omitting the row would leave the measured profile's pooled composition
-entirely unstated, and a caveated
-estimate is more honest than a silent gap. It is not a claim that we have
-measured a pooled presentation, and no number in this paper should be read
-as one.
+One row of the measured profile carries a third tag, \texttt{ESTIMATED}, and
+what it is not needs saying precisely. Nothing in \occultation{} measures a
+pooled presentation's \emph{online} phase --- the work left over once a
+blinding factor has been pre-computed and pulled off the pool. That row is
+derived from a cheaper stand-in: two hash-to-scalar operations, standing in
+for the challenge hash and the field-arithmetic responses a real online phase
+would do. \texttt{occultation pool}, the command that actually drives the
+pool under load (Section~\ref{sec:pool}), does not close the gap either ---
+when the operator supplies no \texttt{--online} cost, it defaults to this
+same estimate. So the estimate and the pool simulation are not independent
+evidence for each other. And the row's own note says the estimate is almost
+certainly too low: it implies a \pooledreductionpct{} reduction in
+presentation cost where the desk study's own pooled figure implies
+\deskpooledreductionpct{}. We print it anyway, because dropping the row would
+leave the measured profile's pooled composition unstated altogether, and a
+caveated estimate beats a silent gap. It is not a claim that we measured a
+pooled presentation. No number in this paper should be read as one.
 
 % ================================================================
-\section{Results}
+\section{What It Actually Costs}
 \label{sec:results}
 
 Every table and every inline figure in this section is generated by
 \texttt{scripts/\allowbreak regen-results.sh} from files under
-\texttt{../results/} and \texttt{\textbackslash{}input}-ed or
-substituted as a \LaTeX{} macro; none of it is typed here by hand. Files
-under \texttt{results/deterministic/} are arithmetic over the desk study's
-published constants, a seeded pool simulation (including
-\texttt{pool-facts.tex}), or a partition of a fixed fleet file, so they
-reproduce byte-for-byte on any host and continuous integration fails the
+\texttt{../results/} and either \texttt{\textbackslash{}input}-ed or
+substituted as a \LaTeX{} macro. None of it was typed. Files under
+\texttt{results/deterministic/} are arithmetic over the desk study's
+published constants, a seeded pool simulation (\texttt{pool-facts.tex}
+included), or a partition of a fixed fleet file, so they come out
+byte-for-byte identical on any host and continuous integration fails the
 build on a diff. Files under \texttt{results/measured/} are wall-clock
-timing, differ by host, and are not diffed for that reason; every number
-drawn from them is marked as measured, either in its own table or, for
-\texttt{composed-facts.tex}, in the prose that cites it.
+timing. They differ by host, so they are not diffed, and every number taken
+from them is marked as measured --- in its own table, or, for
+\texttt{composed-facts.tex}, in the prose that quotes it.
 
-\subsection{The composed path, corrected}
+\subsection{Adding the two halves together}
 \label{sec:results-composed}
 
 \input{../results/deterministic/composed-table.tex}
 
-Table~\ref{tab:composed} is the desk study's own published figures,
-composed as one path instead of two. The naive composition misses the
-budget outright. Caching pairings brings it to \texttt{MARGINAL} rather than
-a pass --- under the limit, but by a margin smaller than the jitter of an
-uncontended context switch. Only the pre-computation pool, combined with
-cached pairings, fits with room, which is the paper's headline correction:
-pre-computation is not an optimization on top of a design that already
-works. It is the reason the design fits its own budget at all.
+Table~\ref{tab:composed} is the desk study's own published figures, composed
+as one path instead of two. The naive composition misses the budget outright.
+Caching pairings pulls it back to \texttt{MARGINAL} rather than a pass ---
+under the limit, but by less than the jitter of an uncontended context
+switch. Only the pre-computation pool, together with cached pairings, fits
+with room. That is the headline correction, and it is a statement about these
+figures: in the desk study's own numbers, pre-computation is not an
+optimization sitting on top of a design that already works. It is the reason
+the design fits its budget at all.
 
-Table~\ref{tab:primitives} measures the individual primitives that compose
-Table~\ref{tab:composed}'s presentation and verification costs, timed here
-on this host rather than read from a publication: ten primitive operations
-rather than three compositions, and without a budget verdict against any of
-them individually, which is the entire point Table~\ref{tab:composed}
-exists to make.
+Table~\ref{tab:primitives} times the individual primitives underneath
+Table~\ref{tab:composed}'s presentation and verification costs, here on this
+host rather than read out of a publication: ten primitive operations instead
+of three compositions, and no budget verdict against any one of them, which
+is the whole point Table~\ref{tab:composed} exists to make.
 
 \input{../results/measured/primitives-table.tex}
 
-The measured composed path (\texttt{results/measured/composed.txt}, reported
-in prose here rather than as a table) is \measureddivergencefactor{}$\times$
+The measured composed path (\texttt{results/measured/composed.txt}, given in
+prose here rather than as a table) is \measureddivergencefactor{}$\times$
 \measureddivergencedirection{} here than the desk study's published figures
 imply, and the composed BBS+ path costs \measuredratiotobaseline{}$\times$ an
-Ed25519 sign-and-verify round trip on this host. That divergence factor is
-not an apples-to-apples comparison: the desk study's naive presentation
-figure folds in a \SI{4.6}{\milli\second} (33\,\%) allowance for the escrow
-tag, while the measured figure here excludes escrow entirely; excluding
-escrow from both sides instead gives a divergence of roughly
-\measureddivergencefactorexclescrow{}$\times$. The composition error itself
-is unaffected by any of this: it is an error in arithmetic, not a property
-of any one machine, and it reproduces identically wherever the desk study's
-published figures are summed.
+Ed25519 sign-and-verify round trip on this host. That factor is not
+like-for-like. The desk study's naive presentation figure folds in a
+\SI{4.6}{\milli\second} (33\,\%) allowance for the escrow tag; the measured
+figure here leaves escrow out entirely. Take escrow off both sides and the
+divergence is roughly \measureddivergencefactorexclescrow{}$\times$. None of
+which touches the composition error, because that error is arithmetic rather
+than a property of any one machine, and it comes out the same wherever the
+desk study's published figures are added up.
 
-What the magnitude alone would hide is that the divergence is not uniform.
-Cached pairings are the one optimization measured on both sides of the
-comparison: the desk study's published figures attribute
-\deskcachedsavingpct{} of verification cost to caching the pairing
-computation, and the same optimization saves \measuredcachedsavingpct{}
-here. A uniformly faster host would preserve the desk study's ratio between
-optimized and unoptimized verification; this host does not, so the measured
-block does not corroborate the desk study's optimization structure, which we
-report as a finding in its own right rather than as noise to be averaged
-away.
+The magnitude is the part that hides the finding. The divergence is not
+uniform. Cached pairings are the one optimization measured on both sides:
+the desk study's figures credit caching the pairing computation with
+\deskcachedsavingpct{} of verification cost, and the same optimization saves
+\measuredcachedsavingpct{} here. A host that were simply faster across the
+board would keep the desk study's ratio between optimized and unoptimized
+verification. This host does not. So the measured block does not corroborate
+the desk study's optimization structure, and we report that as a finding in
+its own right rather than averaging it away as noise.
 
-\subsection{Pool exhaustion under burst}
+\subsection{What the pool costs when it runs dry}
 \label{sec:results-pool}
 
-Section~\ref{sec:pool} argues that the pre-computation pool's soundness,
-not its speed, is the question the correction above actually raises. The
-numbers behind that argument, from the shipped burst configuration
-(capacity \poolcapacity{}, refill \poolrefillcostsi{}, online
-\poolonlinecostsi{}, burst rate \poolburstratesi{}, seed \poolseed{} ---
-the same configuration \texttt{tests/acceptance.rs}'s acceptance test~2
-exercises) are: of
+Section~\ref{sec:pool} argues that what the correction above really raises is
+the pool's soundness, not its speed. These are the numbers behind that
+argument. They come from the shipped burst configuration --- capacity
+\poolcapacity{}, refill \poolrefillcostsi{}, online \poolonlinecostsi{},
+burst rate \poolburstratesi{}, seed \poolseed{}, the same configuration
+\texttt{tests/acceptance.rs}'s acceptance test~2 exercises. Of
 \poolrequests{} requests over a \poolwindow{} window, \poolserved{} were
 served immediately and \poolstalled{} stalled. The worst response was
-\poolamplification{}$\times$ an idle one. That figure is a peak over the
-observation window and grows linearly with it, so we report it beside its
-duration-invariant companions: an overload factor of
-\pooloverloadfactor{}$\times$ arrivals over refill, a growth rate of
-\poolgrowthperrequest{}$\times$ an idle response added to each successive
-stall once the pool runs dry, and an onset at request \poolonsetrequest{}
---- how briefly a burst has to be sustained before the channel opens. Every
-one of \pooldistinctblinding{} requests received a distinct blinding factor;
-reuse events: \poolreuseevents{}.
+\poolamplification{}$\times$ an idle one.
+
+That last figure is a peak over the observation window, and it grows linearly
+with the window, so it should never travel on its own. Beside it go the
+three numbers that do not depend on how long you watch: an overload factor of
+\pooloverloadfactor{}$\times$, arrivals over refill; a growth rate of
+\poolgrowthperrequest{}$\times$ an idle response, added to each successive
+stall once the pool is dry; and an onset at request \poolonsetrequest{},
+which is how briefly a burst has to be sustained before the channel opens.
+Every one of \pooldistinctblinding{} requests got a distinct blinding factor.
+Reuse events: \poolreuseevents{}.
 
 The refill and online costs above (\poolrefillcostsi{} and
 \poolonlinecostsi{}) are values \texttt{scripts/regen-results.sh} stipulates
-for this simulation, not a measurement of any specific deployment;
-\poolamplification{}$\times$ and \poolgrowthperrequest{}$\times$ both scale
-inversely with the chosen online cost, while \pooloverloadfactor{}$\times$
-does not depend on it.
+for this simulation. They are not a measurement of any deployment. Both
+\poolamplification{}$\times$ and \poolgrowthperrequest{}$\times$ scale
+inversely with whatever online cost you pick; \pooloverloadfactor{}$\times$
+does not depend on it at all.
 
-\subsection{Anonymity under fleet drift}
+\subsection{How much of the fleet looks alike}
 \label{sec:results-anonymity}
 
 \input{../results/deterministic/anonymity-table.tex}
 
 Table~\ref{tab:anonymity} answers a question the desk study's cost analysis
-does not ask at all: given perfect unlinkability at the credential layer,
-how large is the anonymity set the hardware attestation layer actually
-leaves standing? \texttt{examples/fleet-drifted.toml} is a synthetic,
-hand-authored fixture, not telemetry from any live fleet; it encodes
+never asks. Suppose the credential layer is perfectly unlinkable. How large
+is the anonymity set the hardware attestation layer leaves standing
+underneath it? \texttt{examples/fleet-drifted.toml} is a synthetic,
+hand-authored fixture, not telemetry from any live fleet. It describes
 \anonfleetsize{} hosts of identical hardware after six weeks of the kind of
-operational drift a
-real fleet accumulates --- a canary batch here, a delayed patch there, a
-microcode revision that shipped to some racks and not others. A uniform
-fleet with none of that drift (\texttt{examples/fleet-uniform.toml}) is one
-anonymity set the size of the whole fleet, by construction, and serves only
-as the tool's control case; Table~\ref{tab:anonymity} is the drifted one,
-more representative of ordinary operation, though both fixtures are
-synthetic rather than telemetry from a live fleet.
+operational drift a real fleet accumulates: a canary batch here, a delayed
+patch there, a microcode revision that reached some racks and not others. A
+uniform fleet with none of that drift
+(\texttt{examples/fleet-uniform.toml}) is one anonymity set the size of the
+whole fleet, by construction, and exists only as the tool's control case.
+Table~\ref{tab:anonymity} is the drifted fleet, which is closer to how a
+fleet actually runs --- though both files are things we wrote, not telemetry
+from a live fleet.
 
 % ================================================================
 \section{Is the Pre-Computation Pool Sound?}
 \label{sec:pool}
 
-Section~\ref{sec:results-composed} established that, in the desk study's own
+Section~\ref{sec:results-composed} established that in the desk study's own
 published figures, pre-computation is what lets the composed path fit its
 budget at all, not an optional speed-up on top of a design that already
-worked. That reframing relocates the risk. The
-question is no longer whether BBS+ is fast enough; it is whether the pool
-that makes it fast enough is sound. Nobody asked this question before the
-desk study's arithmetic error made pre-computation load-bearing, because
-until then it looked like an optimization, and optimizations are not
-normally where a security review looks.
+worked. That moves the risk somewhere else. The question stops being whether
+BBS+ is fast enough and becomes whether the pool that makes it fast enough is
+sound. Nobody asked before, because until the arithmetic error surfaced,
+pre-computation looked like an optimization, and optimizations are not where
+a security review looks.
 
 \paragraph{The two available behaviours.} A pool of pre-computed blinding
-factors sitting in front of a burst of demand has exactly two ways to
-respond once it is empty: it can make the caller wait for a fresh item, or
-it can hand back one that has already been used. \occultation{}'s
+factors, sitting in front of a burst of demand, has exactly two things it can
+do once it is empty. It can make the caller wait for a fresh item, or it can
+hand back one that has already been used. \occultation{}'s
 \texttt{PrecomputationPool} does the first and never the second. On
-exhaustion, \texttt{acquire} returns \texttt{None} rather than a used item,
-and there is no configuration flag or code path under which it returns one.
-Section~\ref{sec:results-pool} reports the cost of choosing to stall: under
-a sustained burst, the delay does not plateau, it grows with the length of
-the burst, and that growth is a timing side channel with a
-duration-invariant signature --- an observer of an agent's response latency
-alone can read off how overloaded it is and how long it has been that way.
+exhaustion \texttt{acquire} returns \texttt{None} rather than a used item,
+and there is no flag and no code path that makes it return one.
+Section~\ref{sec:results-pool} is the price of that choice: under a sustained
+burst the delay does not plateau, it grows with the length of the burst, and
+that growth is a timing side channel with a duration-invariant signature.
+Watch nothing but an agent's response latency and you can read off how
+overloaded it is and how long it has been that way.
 
 \paragraph{Why the alternative is not a lesser evil.} Reusing one set of
-blinding scalars across two presentations is not merely a weakening of
-unlinkability; it discloses the credential outright, and this is provable
+blinding scalars across two presentations does not merely weaken
+unlinkability. It discloses the credential outright, and that is provable
 rather than asserted. A BBS+ presentation's proof of knowledge has the
 Schnorr-style shape common to sigma protocols: for a hidden value $x$ (the
 signature's blinding scalar, or an undisclosed attribute) with blinding
@@ -650,52 +677,51 @@ x = \frac{\hat{x}_1 - \hat{x}_2}{c_1 - c_2}.
 \end{equation}
 This is not a hypothetical weakness. \texttt{pool.rs}'s test
 \texttt{reusing\ub one\ub set\ub of\ub scalars\ub leaks\ub the\ub signature\ub and\ub every\ub hidden\ub attribute}
-performs exactly this division on the reused presentation's responses,
-against a real signature and real hidden attributes, and asserts that the
-recovered value equals the signature's scalar and every undisclosed
-attribute in order. The two presentations are also linkable on sight before
-any arithmetic is done, because they share the same commitment values
-outright. Reuse is not a smaller version of the unlinkability property
-failing; it is that property's negation, handed to whoever sees both
-transcripts, in closed form.
+does exactly this division on the reused presentation's responses, against a
+real signature and real hidden attributes, and asserts that what comes back
+is the signature's scalar and every undisclosed attribute in order. The two
+presentations are linkable on sight before any of that arithmetic is done
+anyway, because they carry the same commitment values. Reuse is not a milder
+version of unlinkability failing. It is unlinkability's negation, in closed
+form, handed to anyone who sees both transcripts.
 
 \paragraph{What the type system buys, stated precisely.} \texttt{PoolItem}
-is not \texttt{Clone} and its \texttt{consume} method takes \texttt{self} by
-value, so \emph{accidental} reuse --- holding an item, copying it, or
-re-acquiring it from the pool a second time --- is impossible: the fields
-are private, the type cannot be duplicated, and \texttt{acquire} never
-returns an item to its own queue. This is worth stating exactly because it
-is easy to overstate. \emph{Deliberate} reuse is not prevented.
-\texttt{consume} places no bound on what its closure returns, and the
-scalars underneath are an ordinary \texttt{Clone}able type with public
-fields, so \texttt{item.consume(|s| s.clone())} yields an owned copy that
-outlives the item, and the lower-level proving function that accepts
-pre-chosen scalars is itself public. What the design buys is not a guarantee
-that reuse cannot happen; it is that any such reuse is one conspicuous,
-greppable \texttt{.clone()} call at the point it happens, rather than an
-emergent property of a pool running dry under load --- which is precisely
-the failure mode this paper's measurement is about. A code reviewer looking
-for that call will find it. A load test will not, because there is nothing
-under load that produces it: exhaustion produces a stall, and only a stall.
+is not \texttt{Clone}, and its \texttt{consume} method takes \texttt{self} by
+value, so \emph{accidental} reuse --- holding an item, copying it, or pulling
+it off the pool a second time --- is impossible. The fields are private, the
+type cannot be duplicated, and \texttt{acquire} never puts an item back in
+its own queue. This is worth stating exactly, because it is easy to
+overstate. \emph{Deliberate} reuse is not prevented. \texttt{consume} puts no
+bound on what its closure returns, the scalars underneath are an ordinary
+\texttt{Clone}able type with public fields, so \texttt{item.consume(|s|
+s.clone())} yields an owned copy that outlives the item --- and the
+lower-level proving function that takes pre-chosen scalars is public too.
+What the design buys is not a guarantee that reuse cannot happen. It is that
+any reuse is one conspicuous, greppable \texttt{.clone()} at the point it
+happens, rather than something a pool running dry under load produces on its
+own --- which is exactly the failure mode this paper's measurement is about.
+A reviewer looking for that call will find it. A load test will not, because
+nothing under load produces it. Exhaustion produces a stall, and only a
+stall.
 
-\paragraph{What we are not claiming.} We have not built or evaluated a third
-option beyond stall and reuse, and P05's own open question --- whether pool
-refill activity, running as idle-time work inside the protected environment,
-correlates with agent activity in a way an observable host resource (power
-draw, cache behaviour, scheduling) could exploit --- is untouched by this
-paper's measurements. \texttt{pool}'s simulation also treats refill as a
-fluid approximation of a single worker rather than a discrete-event queue;
-the approximation is stated in the code and does not change which of the two
-behaviours is chosen, but it means the specific latency numbers in
-Section~\ref{sec:results-pool} are a model of one refill strategy, not a
-measurement of every plausible implementation.
+\paragraph{What we are not claiming.} We have not built or evaluated any
+third option beyond stall and reuse. P05's own open question --- whether pool
+refill, running as idle-time work inside the protected environment,
+correlates with agent activity closely enough that an observable host
+resource (power draw, cache behaviour, scheduling) gives it away --- is
+untouched by anything we measured. And \texttt{pool}'s simulation treats
+refill as a fluid approximation of a single worker rather than a
+discrete-event queue. The approximation is written down in the code and it
+does not change which of the two behaviours gets chosen, but it does mean the
+specific latency numbers in Section~\ref{sec:results-pool} are a model of one
+refill strategy rather than a measurement of every plausible one.
 
 % ================================================================
 \section{What We Still Don't Know}
 \label{sec:open}
 
 Four questions this tool does not answer, in the order the desk study's own
-open-questions list raises them:
+open-questions list puts them:
 
 \begin{enumerate}[itemsep=3pt,topsep=3pt]
 
@@ -704,13 +730,12 @@ posting time and size, even if the commitments themselves hide everything
 cryptographically?} The construction's evidence-log layer proposes
 per-session ephemeral chains with roots posted as re-randomizable Pedersen
 commitments, specifically so that a log operator cannot reconstruct a global
-action sequence from the commitments' contents. Nothing in this tool touches
-that layer: it is not implemented, measured, or modelled here. Cryptographic
-hiding of a value says nothing about the traffic pattern of when and how
-often that value is posted, and an operator who can observe posting times
-and sizes has a side channel that no property of the commitment scheme
-addresses. This is the specific gap P05 names and the specific thing to
-prove or refute, and this paper does neither.
+action sequence out of what the commitments contain. Nothing in this tool
+touches that layer --- it is not implemented, measured, or modelled here.
+Hiding a value cryptographically says nothing about when and how often the
+value gets posted, and an operator who can watch posting times and sizes has
+a side channel no property of the commitment scheme addresses. This is the
+gap P05 names, and the thing to prove or refute. This paper does neither.
 
 \item \textbf{What does tamper-evidence mean once the global chain is
 replaced by independent per-session chains?} A single global hash chain
@@ -729,30 +754,58 @@ badly with fleet size, is historically the hardest part of deploying
 anonymous credentials, and it is barely touched by the desk study this paper
 corrects. \occultation{} has no revocation mechanism, measured or modelled.
 
-\item \textbf{Is an anonymity set built from TCB configuration diversity
+\item \textbf{Is an anonymity set built out of TCB configuration diversity
 even the right set to be measuring?} Section~\ref{sec:results-anonymity}
-answers ``how large is the set a real fleet's hardware diversity leaves
-standing,'' which is a question worth answering on its own, but it is not
-the same question as ``what is the anonymity set a colluding pair of relying
-parties should be evaluated against.'' The right set might be agents within
-one enterprise, enterprises sharing one credential issuer, or TEE hardware
-generations across many unrelated fleets, and the answer changes who the
-scheme protects against whom. Our calculator partitions whatever fleet
-description it is given; it has no opinion about which fleet is the
-relevant one, and supplying that opinion is future work, not something this
-measurement resolves by itself.
+answers ``how large is the set a fleet's hardware diversity leaves
+standing,'' which is worth answering on its own. It is not the same question
+as ``what anonymity set should a colluding pair of relying parties be
+evaluated against.'' The right set might be agents inside one enterprise, or
+enterprises sharing one credential issuer, or TEE hardware generations across
+many unrelated fleets --- and the answer changes who the scheme protects from
+whom. Our calculator partitions whatever fleet description you hand it. It
+has no opinion about which fleet is the relevant one. Supplying that opinion
+is future work, not something this measurement settles on its own.
 
 \end{enumerate}
 
-Two structural omissions sit above these four and are worth naming rather
-than leaving implicit. The evidence-log and transport layers of
-Table~\ref{tab:layers} are not implemented, measured, or modelled anywhere
-in this artifact: the first is questions 1 and 2 above, and the second ---
-Oblivious HTTP, relay padding, and everything that stops an unlinkable
-credential from riding over a directly attributable connection --- is named
-by P05 and untouched by this tool entirely. Every figure this paper reports
-about cost, exhaustion, or anonymity should be read as a statement about the
-credential and hardware-attestation layers alone.
+Two structural omissions sit above all four and are worth naming out loud.
+The evidence-log and transport layers of Table~\ref{tab:layers} are not
+implemented, measured, or modelled anywhere in this artifact. The first is
+questions 1 and 2 above. The second --- Oblivious HTTP, relay padding, and
+everything else that stops an unlinkable credential from riding over a
+directly attributable connection --- is named by P05 and untouched by this
+tool entirely. Every figure this paper reports, about cost or exhaustion or
+anonymity, is a statement about the credential and hardware-attestation
+layers alone.
+
+% ================================================================
+\section{Conclusion}
+
+Two numbers were held up against one budget, one at a time, and each of them
+cleared it. The design they belong to was reported as fitting. It does not
+fit: the sum is over. That is the correction, it needs no hardware to
+reproduce, and it comes out the same wherever the desk study's published
+figures are added up. What it changes is what the design is standing on. In
+those figures the pre-computation pool is not a speed-up bolted onto
+something that already worked --- it is the reason anything fits, which turns
+a performance detail into a security question nobody had reason to ask. So we
+asked it. The pool stalls rather than reusing, because reuse hands anybody
+who sees two transcripts the signature scalar and every undisclosed attribute
+in closed form; and stalling is not free either, because the delay grows with
+the burst and an observer can read the overload off an agent's response
+latency.
+
+The part of this we are least able to defend is the evidence underneath it.
+The fleet whose anonymity sets we partition is a TOML file we wrote by hand,
+and the drift in it is the drift we thought a real fleet would accumulate,
+not drift anybody observed. Two of the five layers are stubs with no security
+in them whatsoever. The BBS+ under the credential layer is real cryptography,
+but it has never been run against the IETF draft's test vectors and will not
+interoperate with another implementation. An error in somebody else's
+arithmetic is cheap to be right about, because the arithmetic is public and
+anyone can redo it. Everything else here rests on fixtures we wrote for
+ourselves. If one sentence survives this paper, we would rather it be that
+one than the correction.
 
 % ================================================================
 \bibliographystyle{unsrt}
