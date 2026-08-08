@@ -11,11 +11,11 @@
 //! not claimed anywhere and must not be inferred.
 
 pub mod keys;
+pub mod proof;
 pub mod sign;
-// `pub mod proof;` is added in Task 6, when the file exists. Adding it now
-// breaks the build at the end of this task.
 
 pub use keys::{KeyPair, PublicKey, SecretKey};
+pub use proof::{Proof, ProofScalars};
 pub use sign::{calculate_domain, message_to_scalar, sign, verify, Signature};
 
 #[derive(Debug, thiserror::Error)]
