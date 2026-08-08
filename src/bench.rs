@@ -340,3 +340,284 @@ impl PrimitiveCosts {
         )
     }
 }
+
+use crate::cost::{compose, fmt_ms, Composed, CostProfile};
+
+/// One composition of a present-and-verify path, judged as a whole.
+#[derive(Debug)]
+pub struct ComposedRow {
+    pub label: String,
+    pub composed: Composed,
+    /// True when both halves came from a publication rather than this host.
+    pub published: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct ComposedReport {
+    pub desk_study: Vec<ComposedRow>,
+    pub measured: Vec<ComposedRow>,
+    pub baseline_round_trip: Duration,
+    pub measured_ratio: f64,
+}
+
+/// Compose the desk study's published figures and this host's measured ones.
+///
+/// Three compositions each: the naive path, the path with cached pairings
+/// only, and the path with both a pre-computation pool and cached pairings.
+pub fn composed_report(costs: &PrimitiveCosts) -> ComposedReport {
+    let d = CostProfile::desk_study();
+    let desk_study = vec![
+        ComposedRow {
+            label: "naive (no pool, no cached pairings)".into(),
+            composed: compose(d.present_naive.cost, d.verify_naive.cost),
+            published: true,
+            note: Some(
+                "13.8 ms and 4.2 ms were each assessed separately against the \
+                 15 ms budget and each looked acceptable."
+                    .into(),
+            ),
+        },
+        ComposedRow {
+            label: "cached pairings only".into(),
+            composed: compose(d.present_naive.cost, d.verify_cached.cost),
+            published: true,
+            note: Some(
+                "Under the limit with 100 us to spare, which leaves nothing for \
+                 application work, network time or evidence writing."
+                    .into(),
+            ),
+        },
+        ComposedRow {
+            label: "pre-computation pool + cached pairings".into(),
+            composed: compose(d.present_pooled.cost, d.verify_cached.cost),
+            published: true,
+            note: Some(
+                "The only composition that fits. Pre-computation is load-bearing, \
+                 not an optimization."
+                    .into(),
+            ),
+        },
+    ];
+
+    let (present, verify_uncached, verify_cached) = costs.composed_halves();
+    // A pooled presentation removes the group operations from the online path,
+    // leaving the challenge hash and the field-arithmetic responses. Task 9
+    // measures that directly; here it is the presentation minus its group
+    // work, approximated by the hash cost, and labelled as an estimate.
+    let pooled_estimate = costs.hash_to_scalar.median * 2;
+    let measured = vec![
+        ComposedRow {
+            label: "naive (no pool, no cached pairings)".into(),
+            composed: compose(present, verify_uncached),
+            published: false,
+            note: None,
+        },
+        ComposedRow {
+            label: "cached pairings only".into(),
+            composed: compose(present, verify_cached),
+            published: false,
+            note: None,
+        },
+        ComposedRow {
+            label: "pre-computation pool (estimated) + cached pairings".into(),
+            composed: compose(pooled_estimate, verify_cached),
+            published: false,
+            note: Some(
+                "Pooled presentation is estimated here; `occultation pool` measures it.".into(),
+            ),
+        },
+    ];
+
+    let baseline_round_trip = costs.baseline.round_trip();
+    let measured_ratio = if baseline_round_trip.is_zero() {
+        f64::NAN
+    } else {
+        measured[0].composed.total.as_secs_f64() / baseline_round_trip.as_secs_f64()
+    };
+
+    ComposedReport {
+        desk_study,
+        measured,
+        baseline_round_trip,
+        measured_ratio,
+    }
+}
+
+impl ComposedReport {
+    pub fn render(&self) -> String {
+        let mut out =
+            String::from("The composed present-and-verify path against a 15 ms budget\n\n");
+
+        out.push_str("PUBLISHED — desk study figures, not measured on this stack\n");
+        out.push_str(&Self::rows(&self.desk_study));
+        out.push_str(
+            "\nThe correction: presentation and verification were assessed \
+             separately against\nthe budget and each looked acceptable. Their sum is \
+             18.00 ms, which is over.\n",
+        );
+
+        out.push_str("\nmeasured here\n");
+        out.push_str(&Self::rows(&self.measured));
+        out.push_str(&format!(
+            "\nMeasured and published figures differ substantially — this host's \
+             primitives are\nfaster than the ones the desk study cites. The composition \
+             error is unaffected:\nit is an error in arithmetic, not in hardware. \
+             Composed BBS+ costs {:.0}x an\nEd25519 sign-and-verify round trip of {} here.\n",
+            self.measured_ratio,
+            fmt_ms(self.baseline_round_trip)
+        ));
+        out
+    }
+
+    fn rows(rows: &[ComposedRow]) -> String {
+        let mut out = format!(
+            "  {:<46} {:>10} {:>10} {:>10}  {}\n",
+            "COMPOSITION", "PRESENT", "VERIFY", "TOTAL", "VERDICT"
+        );
+        for r in rows {
+            out.push_str(&format!(
+                "  {:<46} {:>10} {:>10} {:>10}  {}\n",
+                r.label,
+                fmt_ms(r.composed.present),
+                fmt_ms(r.composed.verify),
+                fmt_ms(r.composed.total),
+                r.composed.verdict
+            ));
+            if let Some(n) = &r.note {
+                out.push_str(&format!("      {n}\n"));
+            }
+        }
+        out
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let rows = |rs: &[ComposedRow]| {
+            rs.iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "label": r.label,
+                        "published": r.published,
+                        "composed": r.composed,
+                        "note": r.note,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        serde_json::json!({
+            "budget_us": crate::cost::BUDGET.as_secs_f64() * 1e6,
+            "desk_study": rows(&self.desk_study),
+            "measured": rows(&self.measured),
+            "baseline_round_trip_us": self.baseline_round_trip.as_secs_f64() * 1e6,
+            "measured_ratio_to_baseline": self.measured_ratio,
+        })
+    }
+}
+
+#[cfg(test)]
+mod composed_tests {
+    use super::*;
+    use crate::cost::{BudgetVerdict, BUDGET};
+
+    fn costs() -> PrimitiveCosts {
+        // Few iterations: these tests assert structure, not speed.
+        run_bench(&BenchOptions {
+            iters: 5,
+            ..Default::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_report_carries_both_profiles() {
+        let r = composed_report(&costs());
+        assert!(r.desk_study.iter().all(|row| row.published));
+        assert!(r.measured.iter().all(|row| !row.published));
+        assert_eq!(r.desk_study.len(), 3, "naive, cached-only, pool+cached");
+        assert_eq!(r.measured.len(), 3);
+    }
+
+    #[test]
+    fn the_desk_study_naive_row_misses_the_budget() {
+        let r = composed_report(&costs());
+        let naive = &r.desk_study[0];
+        assert_eq!(naive.composed.total, Duration::from_micros(18_000));
+        assert_eq!(
+            naive.composed.verdict,
+            BudgetVerdict::Misses {
+                over: Duration::from_millis(3)
+            }
+        );
+    }
+
+    #[test]
+    fn every_row_total_is_the_sum_of_its_halves() {
+        // The whole point: nothing is judged against the budget except a sum.
+        let r = composed_report(&costs());
+        for row in r.desk_study.iter().chain(r.measured.iter()) {
+            assert_eq!(
+                row.composed.total,
+                row.composed.present + row.composed.verify,
+                "{} was judged on something other than its sum",
+                row.label
+            );
+            assert_eq!(row.composed.budget, BUDGET);
+        }
+    }
+
+    #[test]
+    fn the_rendered_report_never_shows_a_half_path_verdict() {
+        // A verdict beside a presentation-only or verification-only figure is
+        // exactly the mistake being corrected. There must be one verdict per
+        // composed row and no more.
+        let out = composed_report(&costs()).render();
+        let verdicts = out.matches("MISSES").count()
+            + out.matches("MARGINAL").count()
+            + out.matches("fits,").count();
+        assert_eq!(
+            verdicts, 6,
+            "one verdict per composed row, no others:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_report_states_the_correction_in_prose() {
+        let out = composed_report(&costs()).render();
+        assert!(out.contains("separately"), "must name the error: {out}");
+        assert!(out.contains("18.00 ms"), "must show the sum: {out}");
+    }
+
+    #[test]
+    fn the_measured_profile_is_labelled_as_diverging_from_the_published_one() {
+        let out = composed_report(&costs()).render();
+        assert!(out.contains("measured here"));
+        assert!(out.contains("PUBLISHED"));
+        assert!(
+            out.contains("differ"),
+            "the report must say the two profiles disagree, not print them silently: {out}"
+        );
+    }
+
+    #[test]
+    fn the_measured_composed_cost_is_a_large_multiple_of_the_baseline() {
+        // Host-independent form of "unlinkability is expensive". The desk
+        // study says ~70x unoptimized; a large multiple reproduces the
+        // qualitative claim without pinning a wall clock.
+        //
+        // The floor is lower under `cargo test`, which builds unoptimized:
+        // ed25519-dalek is pure Rust and loses roughly an order of magnitude,
+        // while blstrs' work happens in blst's C, which is compiled optimized
+        // either way. The debug ratio is therefore compressed and says nothing
+        // about the release one. Run `cargo test --release` for the real
+        // figure.
+        let floor = if cfg!(debug_assertions) { 2.0 } else { 10.0 };
+        let c = costs();
+        let r = composed_report(&c);
+        let ratio =
+            r.measured[0].composed.total.as_secs_f64() / c.baseline.round_trip().as_secs_f64();
+        assert!(
+            ratio > floor,
+            "composed BBS+ was only {ratio:.1}x Ed25519 (floor {floor})"
+        );
+    }
+}

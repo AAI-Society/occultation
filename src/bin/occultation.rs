@@ -90,12 +90,21 @@ fn run() -> Result<ExitCode> {
                 allow_modelled,
             };
             let costs = run_bench(&opts)?;
-            let table = costs.table();
-            match format {
-                Format::Table => println!("{}", table.render()),
-                Format::Json => println!("{}", serde_json::to_string_pretty(&table.to_json())?),
+            if composed {
+                let report = occultation::bench::composed_report(&costs);
+                match format {
+                    Format::Table => println!("{}", report.render()),
+                    Format::Json => {
+                        println!("{}", serde_json::to_string_pretty(&report.to_json())?)
+                    }
+                }
+            } else {
+                let table = costs.table();
+                match format {
+                    Format::Table => println!("{}", table.render()),
+                    Format::Json => println!("{}", serde_json::to_string_pretty(&table.to_json())?),
+                }
             }
-            let _ = composed; // wired in Task 8
             Ok(ExitCode::SUCCESS)
         }
     }
