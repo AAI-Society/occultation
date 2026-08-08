@@ -58,4 +58,4 @@ papers in this series; this paper has no listing that currently requires it.
 | --- | --- |
 | `main.tex` | The paper (compiles with tectonic, XeTeX engine) |
 | `references.bib` | Bibliography: standards, RFCs, and the cryptography literature the construction draws on |
-| `main.pdf` | Compiled output (gitignored build artifact; rebuild with the command above) |
+| `main.pdf` | Compiled output, **committed** so the paper is readable on GitHub. Rebuild it with the command above and commit it alongside any `main.tex` change, or it goes stale. CI builds the paper but does not commit the result. |

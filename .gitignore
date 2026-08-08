@@ -1,5 +1,7 @@
 /target
-paper/*.pdf
+# paper/main.pdf is committed on purpose: reviewers read the paper on GitHub,
+# and LaTeX source is not readable there. It is a build artifact, so it can go
+# stale — rebuild and commit it in the same commit as any main.tex change.
 paper/*.aux
 paper/*.log
 paper/*.out
