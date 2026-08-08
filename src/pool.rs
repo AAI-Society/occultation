@@ -202,8 +202,15 @@ pub struct BurstReport {
     pub latency_p95: Duration,
     pub latency_p99: Duration,
     pub latency_max: Duration,
-    /// `latency_max / latency_p50`. How far a busy agent's response time
-    /// departs from its idle one — the size of the timing side channel.
+    /// `latency_max / online_cost`: how far the busiest response departs from
+    /// an idle one, which is the size of the timing side channel.
+    ///
+    /// The denominator is the **unstalled** cost, deliberately. An earlier
+    /// version divided by `latency_p50`, which is wrong for the case that
+    /// matters: under a sustained burst the queue grows linearly, so the
+    /// median stall is about half the maximum and the ratio saturates near
+    /// 2.0 however bad the backlog gets. A metric that reports 2.0 whether
+    /// the worst response is 2 ms or 6 s does not measure a side channel.
     pub amplification: f64,
     pub distinct_blinding_factors: usize,
     /// Always zero. Present so the report says so out loud, and computed from
@@ -219,6 +226,10 @@ pub struct BurstReport {
 /// is not approximated: every served request takes a real `PoolItem` with real
 /// scalars, so the uniqueness audit measures the actual pool rather than the
 /// model of it.
+///
+/// The stall does not plateau: while arrivals outrun refill, the delay tracks
+/// the burst's duration rather than settling at a fixed penalty, which is
+/// what makes it readable as a side channel rather than merely expensive.
 pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     if !cfg.burst_rate_hz.is_finite() || cfg.burst_rate_hz <= 0.0 {
         return Err(PoolError::BadBurstRate(cfg.burst_rate_hz));
@@ -306,10 +317,10 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
         latency_p95: pick(0.95),
         latency_p99: pick(0.99),
         latency_max,
-        amplification: if p50.is_zero() {
+        amplification: if cfg.online_cost.is_zero() {
             1.0
         } else {
-            latency_max.as_secs_f64() / p50.as_secs_f64()
+            latency_max.as_secs_f64() / cfg.online_cost.as_secs_f64()
         },
         distinct_blinding_factors: fingerprints.len(),
         reuse_events: requests - fingerprints.len(),
@@ -550,6 +561,14 @@ mod tests {
         );
         assert_eq!(r.stalled, 0);
         assert_eq!(r.stall_max, Duration::ZERO);
+        assert_eq!(r.served_immediately, r.requests);
+        assert_eq!(r.stall_total, Duration::ZERO);
+        // No stall means no side channel: every response costs the same.
+        assert!(
+            (r.amplification - 1.0).abs() < 1e-9,
+            "amplification {}",
+            r.amplification
+        );
     }
 
     #[test]
@@ -571,12 +590,21 @@ mod tests {
             r.distinct_blinding_factors, r.requests,
             "every request got a fresh item"
         );
+        assert_eq!(
+            r.served_immediately + r.stalled,
+            r.requests,
+            "every request is accounted for exactly once"
+        );
+        assert!(r.stall_total > Duration::ZERO);
+        assert_eq!(r.refill_rate_hz, 1.0 / cfg.refill_cost.as_secs_f64());
+        assert_eq!(r.burst_rate_hz, cfg.burst_rate_hz);
     }
 
     #[test]
     fn the_stall_grows_through_a_sustained_burst() {
-        // The side channel: latency is not merely worse under load, it climbs,
-        // so an observer can read burst length off response times.
+        // The side channel: latency is not merely worse under load, it climbs
+        // for as long as the burst lasts, so an observer can read the agent's
+        // load — and the burst's duration — off response times alone.
         let cfg = BurstConfig {
             capacity: 32,
             refill_cost: Duration::from_micros(1_000),
@@ -586,30 +614,30 @@ mod tests {
             seed: 7,
         };
         let r = simulate_burst(&cfg).unwrap();
-        // This config makes the pool's 32-item buffer drain in ~43 of the
-        // 8000 requests (~0.5% in), so essentially the whole burst runs
-        // saturated. Under sustained overload a single-server deterministic
-        // queue's wait grows *linearly* in request index (Lindley recursion:
-        // W_k = W_{k-1} + (1/refill_rate - 1/burst_rate_hz)), so for a ramp
-        // that starts almost at the beginning of the window, the median
-        // request is at roughly half the queue depth of the last one:
-        // p50 sits at ~50% of latency_max, not the order-of-magnitude split
-        // a threshold of 10x would require. That ratio is a property of the
-        // queueing model itself, not of this implementation — pushing it much
-        // higher without a much larger capacity/request-count ratio would
-        // mean either the growth stops being visible at all (a formula that
-        // shrinks the near-term wait just lets the buffer keep up) or the
-        // model blows up to infinite wait before the burst finishes (a
-        // formula with true positive feedback). Neither is acceptable in a
-        // measurement tool, so this asserts the amplification this model
-        // actually and reliably produces (~2.01x here) rather than a target
-        // this config cannot reach.
+
+        // Growth, not merely a constant penalty: the median request waits far
+        // less than the last one. In a queue whose backlog grows linearly the
+        // median lands near half the maximum, so this ratio is bounded by
+        // about 2 by construction — assert the growth, but do not treat this
+        // ratio as the side-channel measure.
         assert!(
-            r.latency_max > r.latency_p50 * 19 / 10,
-            "amplification {}",
+            r.latency_max > r.latency_p50,
+            "the stall must grow, not plateau"
+        );
+        assert!(r.latency_p99 > r.latency_p50);
+
+        // The side channel itself, measured against an idle response rather
+        // than a median that is already stalled.
+        assert!(
+            r.amplification > 100.0,
+            "the worst response was only {:.1}x an idle one",
             r.amplification
         );
-        assert!(r.amplification > 1.9);
+        assert!(
+            r.stall_max > Duration::from_millis(100),
+            "stall_max {:?}",
+            r.stall_max
+        );
     }
 
     #[test]
