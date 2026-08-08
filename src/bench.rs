@@ -30,8 +30,14 @@ impl Default for BenchOptions {
     fn default() -> Self {
         // Ten attributes with two disclosed is the shape P05 describes: an
         // agent proving authorization scope while revealing almost nothing.
+        // 1000, not 100. The Ed25519 round trip is the smallest thing in the
+        // table and it divides every other row, so at 100 iterations — of
+        // which the harness warms up ten — the denominator moved by 60%
+        // between runs and the headline multiple ranged 9x to 15x for the
+        // same code. A tool whose only product is ratios cannot have a
+        // default that is not reproducible.
         BenchOptions {
-            iters: 100,
+            iters: 1000,
             seed: 7,
             attributes: 10,
             disclose: 2,
@@ -50,6 +56,21 @@ pub enum BenchError {
     Modelled(#[from] ModelledError),
     #[error("cannot disclose {disclose} of {attributes} attributes")]
     BadDisclosure { disclose: usize, attributes: usize },
+}
+
+impl BenchError {
+    /// The process exit code this error should produce.
+    ///
+    /// The binary must not collapse everything to 2: a modelled component
+    /// requested without the flag is exit 3, and a caller distinguishing
+    /// "you asked for a stub" from "your input was malformed" is the point of
+    /// having separate codes at all.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            BenchError::Modelled(_) => 3,
+            _ => 2,
+        }
+    }
 }
 
 /// Everything `bench` measures, kept as structured samples so `bench
@@ -94,11 +115,19 @@ pub fn run_bench(opts: &BenchOptions) -> Result<PrimitiveCosts, BenchError> {
     let prepared = PreparedIssuer::new(&kp.pk.0);
 
     let s = Scalar::random(&mut ChaCha20Rng::seed_from_u64(opts.seed));
+    // `measure` black-boxes the *result* of each call, which stops the
+    // compiler from discarding it, but `s` and the message below are the
+    // same value on every iteration; a sufficiently aggressive optimizer
+    // could still prove the computation itself is loop-invariant and hoist
+    // it outside the loop, leaving only a cheap black_box materialization
+    // per iteration. These two calls are small and pure enough for that to
+    // be plausible, unlike the pairing-heavy BBS+ operations below, so the
+    // inputs are black-boxed too.
     let g1_mul = measure("G1 scalar multiplication", opts.iters, || {
-        G1Projective::generator() * s
+        G1Projective::generator() * std::hint::black_box(s)
     });
     let h2s = measure("hash_to_scalar", opts.iters, || {
-        hash_to_scalar(b"an agent action", API_ID).expect("fixed-length DST")
+        hash_to_scalar(std::hint::black_box(b"an agent action"), API_ID).expect("fixed-length DST")
     });
 
     let bbs_sign = measure("BBS+ sign (issuer)", opts.iters, || {
@@ -178,6 +207,9 @@ impl PrimitiveCosts {
     pub fn table(&self) -> Table {
         let b = self.baseline.round_trip();
         let src = |s: &Sample| Source::MeasuredHere { iters: s.iters };
+        // Every measured row carries its own p95 as well as its median, via
+        // `.with_p95(s.p95)` — see the note on `Row::p95`. The baseline row
+        // matters most: it is the denominator of every other ratio.
         let mut t = Table::new("Primitive costs against the Ed25519 baseline")
             .with(
                 Row::real(
@@ -185,7 +217,8 @@ impl PrimitiveCosts {
                     self.baseline.sign.median,
                     src(&self.baseline.sign),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.baseline.sign.p95),
             )
             .with(
                 Row::real(
@@ -193,7 +226,8 @@ impl PrimitiveCosts {
                     self.baseline.verify.median,
                     src(&self.baseline.verify),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.baseline.verify.p95),
             )
             .with(
                 Row::real(
@@ -209,7 +243,8 @@ impl PrimitiveCosts {
                     self.g1_mul.median,
                     src(&self.g1_mul),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.g1_mul.p95),
             )
             .with(
                 Row::real(
@@ -217,7 +252,8 @@ impl PrimitiveCosts {
                     self.hash_to_scalar.median,
                     src(&self.hash_to_scalar),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.hash_to_scalar.p95),
             )
             .with(
                 Row::real(
@@ -225,7 +261,8 @@ impl PrimitiveCosts {
                     self.bbs_sign.median,
                     src(&self.bbs_sign),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.bbs_sign.p95),
             )
             .with(
                 Row::real(
@@ -233,7 +270,8 @@ impl PrimitiveCosts {
                     self.bbs_verify.median,
                     src(&self.bbs_verify),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.bbs_verify.p95),
             )
             .with(
                 Row::real(
@@ -241,7 +279,8 @@ impl PrimitiveCosts {
                     self.present.median,
                     src(&self.present),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.present.p95),
             )
             .with(
                 Row::real(
@@ -249,7 +288,8 @@ impl PrimitiveCosts {
                     self.verify_proof_uncached.median,
                     src(&self.verify_proof_uncached),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.verify_proof_uncached.p95),
             )
             .with(
                 Row::real(
@@ -257,7 +297,8 @@ impl PrimitiveCosts {
                     self.verify_proof_cached.median,
                     src(&self.verify_proof_cached),
                 )
-                .against(b),
+                .against(b)
+                .with_p95(self.verify_proof_cached.p95),
             );
 
         for (sample, component) in [
@@ -275,12 +316,13 @@ impl PrimitiveCosts {
                             reason: "stub; cost stand-in only",
                         },
                     )
-                    .against(b),
+                    .against(b)
+                    .with_p95(s.p95),
                 );
             }
         }
 
-        if self.modelled_ecdaa_attest.is_none() {
+        if self.modelled_ecdaa_attest.is_none() && self.modelled_escrow_tag.is_none() {
             t = t.note(
                 "ECDAA and escrow are not shown: they are modelled and require \
                  --allow-modelled to execute.",

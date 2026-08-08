@@ -26,7 +26,7 @@ enum Cmd {
         /// Timed iterations per primitive. Rejected at parse time if zero,
         /// so the failure is an exit-2 usage error rather than an error from
         /// deep inside the harness.
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..))]
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u32).range(1..))]
         iters: u32,
         #[arg(long, default_value_t = 7)]
         seed: u64,
@@ -55,7 +55,14 @@ fn main() -> ExitCode {
         // twice.
         Err(e) => {
             eprintln!("error: {e}");
-            ExitCode::from(2)
+            // Not a blanket 2: a modelled component requested without the
+            // flag is exit 3, and downcasting is how anyhow lets the binary
+            // recover the library's own classification.
+            let code = e
+                .downcast_ref::<occultation::bench::BenchError>()
+                .map(|b| b.exit_code())
+                .unwrap_or(2);
+            ExitCode::from(code)
         }
     }
 }
