@@ -176,8 +176,13 @@ mod tests {
         assert!(sign(&kp.sk, &kp.pk, &gens, HEADER, &msgs[..3]).is_err());
     }
 
+    /// Named for the generator *set*, not the count: the count part of the
+    /// domain preimage is provably redundant with the length-prefixed
+    /// generator list, so this test passes on the list difference alone and
+    /// cannot see the count being dropped. That redundancy is harmless — do
+    /// not "fix" it by adding a term.
     #[test]
-    fn the_domain_binds_the_generator_count() {
+    fn the_domain_binds_the_generator_set() {
         // A signature over 5 messages must not verify against generators built
         // for a different length, even on the same first five messages.
         let (kp, gens, msgs) = fixture(5);
@@ -234,8 +239,70 @@ mod tests {
         tweaked.q1 += G1Projective::generator();
         assert_ne!(calculate_domain(&kp.pk, &tweaked, header).unwrap(), base);
 
-        let mut tweaked = gens.clone();
-        tweaked.h[1] += G1Projective::generator();
-        assert_ne!(calculate_domain(&kp.pk, &tweaked, header).unwrap(), base);
+        // Every generator, not just one: `for h in gens.h.iter().skip(1)` in
+        // the derivation would otherwise survive.
+        for i in 0..gens.h.len() {
+            let mut tweaked = gens.clone();
+            tweaked.h[i] += G1Projective::generator();
+            assert_ne!(
+                calculate_domain(&kp.pk, &tweaked, header).unwrap(),
+                base,
+                "generator h[{i}] does not participate in the domain"
+            );
+        }
+    }
+
+    /// `verify` never recomputes `e` — it reads `sig.e` and checks
+    /// `A = B/(x+e)`, which holds for *any* `e` with `x + e != 0`. So nothing
+    /// in a round trip constrains what `e` is derived from, and the
+    /// determinism test above is satisfied by any deterministic function,
+    /// including a constant.
+    ///
+    /// That gap is a forgery, not an untidiness. If `e` did not depend on the
+    /// messages, every credential an issuer signed under the same generators
+    /// and header would share one `e`, and two signatures could be
+    /// interpolated into a third the issuer never made:
+    ///
+    /// ```text
+    /// A1 = B1/(x+e), A2 = B2/(x+e)
+    /// => l*A1 + (1-l)*A2 = (l*B1 + (1-l)*B2)/(x+e)
+    /// ```
+    ///
+    /// and `l*B1 + (1-l)*B2` is a well-formed `B` on the interpolated
+    /// attribute vector. Distinct `e` per message vector is what prevents it.
+    #[test]
+    fn e_depends_on_every_input_it_is_derived_from() {
+        let (kp, gens, msgs) = fixture(3);
+        let base = sign(&kp.sk, &kp.pk, &gens, HEADER, &msgs).unwrap().e;
+
+        let mut other_msgs = msgs.clone();
+        other_msgs[1] += Scalar::ONE;
+        assert_ne!(
+            sign(&kp.sk, &kp.pk, &gens, HEADER, &other_msgs).unwrap().e,
+            base,
+            "two credentials sharing an e can be interpolated into a third"
+        );
+
+        assert_ne!(
+            sign(&kp.sk, &kp.pk, &gens, b"a different header", &msgs)
+                .unwrap()
+                .e,
+            base
+        );
+
+        let other = KeyPair::generate(8);
+        assert_ne!(
+            sign(&other.sk, &other.pk, &gens, HEADER, &msgs).unwrap().e,
+            base,
+            "e is derived from the secret key so that it is not publicly computable"
+        );
+
+        // Message order must matter too, not just message content.
+        let mut permuted = msgs.clone();
+        permuted.swap(0, 2);
+        assert_ne!(
+            sign(&kp.sk, &kp.pk, &gens, HEADER, &permuted).unwrap().e,
+            base
+        );
     }
 }
