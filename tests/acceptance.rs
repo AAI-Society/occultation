@@ -113,3 +113,105 @@ fn no_verdict_is_ever_issued_against_half_a_path() {
         );
     }
 }
+
+use occultation::bbs::keys::KeyPair;
+use occultation::bbs::proof::{prove_with_scalars, verify_proof};
+use occultation::bbs::sign::{message_to_scalar, sign};
+use occultation::bls::Generators;
+use occultation::pool::{simulate_burst, BurstConfig, PrecomputationPool};
+use std::collections::HashSet;
+
+/// Acceptance test 2 — the pool exhausts under burst, and stalls rather than
+/// reusing.
+#[test]
+fn a_burst_above_the_refill_rate_exhausts_and_stalls_without_reusing() {
+    let cfg = BurstConfig {
+        capacity: 64,
+        refill_cost: Duration::from_micros(700), // ~1430 items/s
+        online_cost: Duration::from_micros(60),
+        burst_rate_hz: 5_000.0, // well above refill
+        duration: Duration::from_secs(2),
+        seed: 7,
+    };
+    let r = simulate_burst(&cfg).unwrap();
+
+    assert!(
+        r.exhausted,
+        "5000/s against ~1430/s refill must exhaust the pool"
+    );
+    assert!(r.stalled > 0, "exhaustion must produce stalls");
+    assert!(r.stall_max > Duration::ZERO);
+    // Against a pool that genuinely ran dry, not just the fluid model's
+    // `exhausted` flag: `acquire` must actually have returned `None`, since
+    // that is the only way a real caller ever learns the pool is empty.
+    assert!(
+        r.pool_exhaustions > 0,
+        "the real pool never exhausted, so this proves nothing"
+    );
+
+    // The invariant. Not a preference, not a tuning choice.
+    assert_eq!(r.reuse_events, 0, "the pool reused a blinding factor");
+    assert_eq!(
+        r.distinct_blinding_factors, r.requests,
+        "every one of {} requests must have had its own blinding",
+        r.requests
+    );
+
+    // And the cost of stalling, which is the finding: latency under load is a
+    // side channel, not merely a slowdown.
+    assert!(
+        r.amplification > 100.0,
+        "the busiest response was only {:.1}x an idle one",
+        r.amplification
+    );
+}
+
+/// The invariant again, at the level of the pool itself rather than the
+/// simulation: an exhausted pool yields nothing rather than something used.
+#[test]
+fn an_exhausted_pool_yields_nothing_rather_than_a_used_item() {
+    let mut pool = PrecomputationPool::new(4, 3, 7);
+    pool.fill();
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    for _ in 0..4 {
+        seen.insert(pool.acquire().expect("pool was filled").fingerprint());
+    }
+    assert_eq!(seen.len(), 4);
+    assert!(
+        pool.acquire().is_none(),
+        "an exhausted pool must stall its caller"
+    );
+    assert_eq!(pool.exhaustions(), 1);
+}
+
+/// Why the invariant is an invariant. Reuse is not a degradation of
+/// unlinkability; it discloses the credential.
+#[test]
+fn reuse_would_hand_over_the_signature_and_every_hidden_attribute() {
+    use blstrs::Scalar;
+    use ff::Field;
+    use occultation::bbs::proof::ProofScalars;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
+
+    let kp = KeyPair::generate(7);
+    let gens = Generators::create(4);
+    let msgs: Vec<Scalar> = (0..4)
+        .map(|i| message_to_scalar(format!("attribute-{i}").as_bytes()).unwrap())
+        .collect();
+    let sig = sign(&kp.sk, &kp.pk, &gens, b"h", &msgs).unwrap();
+    let pairs = vec![(0usize, msgs[0])];
+
+    let s = ProofScalars::random(&mut ChaCha20Rng::seed_from_u64(99), 3);
+    let p1 = prove_with_scalars(&kp.pk, &gens, b"h", b"rp-one", &sig, &msgs, &[0], &s).unwrap();
+    let p2 = prove_with_scalars(&kp.pk, &gens, b"h", b"rp-two", &sig, &msgs, &[0], &s).unwrap();
+
+    assert!(verify_proof(&kp.pk, &gens, b"h", b"rp-one", &pairs, &p1).unwrap());
+    assert!(verify_proof(&kp.pk, &gens, b"h", b"rp-two", &pairs, &p2).unwrap());
+
+    let dc = Option::<Scalar>::from((p1.challenge - p2.challenge).invert()).unwrap();
+    assert_eq!((p1.e_hat - p2.e_hat) * dc, sig.e);
+    for (k, j) in [1usize, 2, 3].into_iter().enumerate() {
+        assert_eq!((p1.m_hat[k] - p2.m_hat[k]) * dc, msgs[j]);
+    }
+}

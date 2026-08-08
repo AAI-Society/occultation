@@ -4,6 +4,7 @@ use occultation::bench::{run_bench, BenchOptions};
 use occultation::modelled::MODELLED_WARNING;
 use occultation::report::Format;
 use std::process::ExitCode;
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(
@@ -37,6 +38,29 @@ enum Cmd {
         /// Run components that provide no security
         #[arg(long)]
         allow_modelled: bool,
+        #[arg(long, default_value = "table")]
+        format: Format,
+    },
+    /// Pre-computation pool under load
+    Pool {
+        /// Presentations per second during the burst
+        #[arg(long)]
+        burst: f64,
+        #[arg(long, default_value = "10s")]
+        duration: humantime::Duration,
+        #[arg(long, default_value_t = 64)]
+        capacity: usize,
+        /// Cost of pre-computing one pool item; defaults to a measured presentation
+        #[arg(long)]
+        refill: Option<humantime::Duration>,
+        /// Cost of finishing a presentation from a pool item; defaults to measured
+        #[arg(long)]
+        online: Option<humantime::Duration>,
+        /// Exit 1 if the worst stall exceeds this
+        #[arg(long)]
+        max_stall: Option<humantime::Duration>,
+        #[arg(long, default_value_t = 7)]
+        seed: u64,
         #[arg(long, default_value = "table")]
         format: Format,
     },
@@ -103,6 +127,77 @@ fn run() -> Result<ExitCode> {
                 match format {
                     Format::Table => println!("{}", table.render()),
                     Format::Json => println!("{}", serde_json::to_string_pretty(&table.to_json())?),
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Pool {
+            burst,
+            duration,
+            capacity,
+            refill,
+            online,
+            max_stall,
+            seed,
+            format,
+        } => {
+            // Defaults come from this host, not from a guess. Measuring costs
+            // a second; inventing a refill cost would make the whole
+            // simulation fiction. Stated on stderr so it never contaminates
+            // machine-readable stdout, but every run says which of the two
+            // costs below were measured and which were given.
+            let refill_given = refill.is_some();
+            let online_given = online.is_some();
+            let (refill_cost, online_cost) = match (refill, online) {
+                (Some(r), Some(o)) => (r.into(), o.into()),
+                (r, o) => {
+                    let costs = run_bench(&BenchOptions {
+                        iters: 30,
+                        seed,
+                        ..Default::default()
+                    })?;
+                    (
+                        r.map(Into::into).unwrap_or(costs.present.median),
+                        o.map(Into::into).unwrap_or(costs.hash_to_scalar.median * 2),
+                    )
+                }
+            };
+            eprintln!(
+                "refill cost   {} ({})\nonline cost   {} ({})\n",
+                occultation::cost::fmt_ms(refill_cost),
+                if refill_given {
+                    "given"
+                } else {
+                    "measured on this host: one presentation's group work"
+                },
+                occultation::cost::fmt_ms(online_cost),
+                if online_given {
+                    "given"
+                } else {
+                    "measured on this host: 2x hash-to-scalar"
+                },
+            );
+            let cfg = occultation::pool::BurstConfig {
+                capacity,
+                refill_cost,
+                online_cost,
+                burst_rate_hz: burst,
+                duration: duration.into(),
+                seed,
+            };
+            let report = occultation::pool::simulate_burst(&cfg)?;
+            match format {
+                Format::Table => println!("{}", report.render()),
+                Format::Json => println!("{}", serde_json::to_string_pretty(&report.to_json())?),
+            }
+            if let Some(limit) = max_stall {
+                if report.stall_max > limit.into() {
+                    eprintln!(
+                        "VIOLATION: worst stall {:?} exceeds --max-stall {:?}",
+                        report.stall_max,
+                        Duration::from(limit)
+                    );
+                    return Ok(ExitCode::from(1));
                 }
             }
             Ok(ExitCode::SUCCESS)

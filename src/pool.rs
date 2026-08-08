@@ -208,6 +208,19 @@ pub struct BurstConfig {
     pub seed: u64,
 }
 
+/// Serializes a `Duration` as microseconds-as-an-`f64`, under a `*_us` field
+/// name via `#[serde(rename = ...)]` on the field. `Duration`'s default
+/// serialization is `{secs, nanos}`, which is unreadable in the JSON output
+/// and inconsistent with `report.rs`'s `cost_us` / `p95_us` fields.
+mod duration_us {
+    use serde::Serializer;
+    use std::time::Duration;
+
+    pub fn serialize<S: Serializer>(d: &Duration, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(d.as_secs_f64() * 1e6)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct BurstReport {
     pub requests: usize,
@@ -216,11 +229,17 @@ pub struct BurstReport {
     pub exhausted: bool,
     pub refill_rate_hz: f64,
     pub burst_rate_hz: f64,
+    #[serde(rename = "stall_total_us", serialize_with = "duration_us::serialize")]
     pub stall_total: Duration,
+    #[serde(rename = "stall_max_us", serialize_with = "duration_us::serialize")]
     pub stall_max: Duration,
+    #[serde(rename = "latency_p50_us", serialize_with = "duration_us::serialize")]
     pub latency_p50: Duration,
+    #[serde(rename = "latency_p95_us", serialize_with = "duration_us::serialize")]
     pub latency_p95: Duration,
+    #[serde(rename = "latency_p99_us", serialize_with = "duration_us::serialize")]
     pub latency_p99: Duration,
+    #[serde(rename = "latency_max_us", serialize_with = "duration_us::serialize")]
     pub latency_max: Duration,
     /// `latency_max / online_cost`: how far the busiest response departs from
     /// an idle one, which is the size of the timing side channel.
@@ -398,6 +417,74 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
         },
         onset_request,
     })
+}
+
+impl BurstReport {
+    pub fn render(&self) -> String {
+        let ms = |d: Duration| format!("{:.3} ms", d.as_secs_f64() * 1e3);
+        let mut out = String::from("Pre-computation pool under burst\n\n");
+        out.push_str(&format!(
+            "  burst rate           {:.0} presentations/s\n  refill rate          {:.0} items/s\n",
+            self.burst_rate_hz, self.refill_rate_hz
+        ));
+        out.push_str(&format!(
+            "  requests             {}\n  served from pool     {}\n  stalled              {}\n",
+            self.requests, self.served_immediately, self.stalled
+        ));
+        if self.exhausted {
+            out.push_str("\n  POOL EXHAUSTED\n");
+        }
+        out.push_str(&format!(
+            "\n  latency p50          {}\n  latency p95          {}\n  latency p99          {}\n  \
+             latency max          {}\n  amplification        {:.1}x  (peak over this {:.1}s window)\n  \
+             total stall          {}\n  worst stall          {}\n",
+            ms(self.latency_p50),
+            ms(self.latency_p95),
+            ms(self.latency_p99),
+            ms(self.latency_max),
+            self.amplification,
+            self.requests as f64 / self.burst_rate_hz,
+            ms(self.stall_total),
+            ms(self.stall_max),
+        ));
+        out.push_str(&format!(
+            "\n  duration-invariant figures (do not move with --duration):\n  \
+             overload factor      {:.2}x arrivals over refill\n  \
+             growth per request   {:.2}x idle-response added to each successive stall\n  \
+             onset request        {}\n",
+            self.overload_factor,
+            self.growth_per_request,
+            self.onset_request
+                .map(|k| k.to_string())
+                .unwrap_or_else(|| "never (pool kept up)".to_string()),
+        ));
+        out.push_str(&format!(
+            "\n  distinct blinding factors issued   {}\n  blinding-factor reuse events       {}\n  \
+             real pool exhaustions              {}\n",
+            self.distinct_blinding_factors, self.reuse_events, self.pool_exhaustions
+        ));
+        out.push_str(
+            "\nOn exhaustion there are two available behaviours. This tool stalls. It does not\n\
+             reuse, and reuse is not configurable: two presentations sharing one blinding\n\
+             factor are linkable on sight, and an observer of both transcripts recovers the\n\
+             signature scalar and every undisclosed attribute by subtraction.\n\n\
+             Stalling is not free either. The amplification figure above is the size of the\n\
+             timing side channel: how far a busy agent's response time departs from its idle\n\
+             one, and therefore how much of its load an observer can read off latency alone.\n\
+             It is the peak over the observation window and grows linearly with --duration, so\n\
+             it characterises the window as much as the pool; the overload factor and growth\n\
+             per request above are its duration-invariant companions and are the figures to\n\
+             quote as a property of this pool rather than of this run.\n\n\
+             The stall does not plateau. While arrivals outrun refill the backlog grows, so\n\
+             each successive request waits longer than the last and the delay tracks the\n\
+             burst's duration — which is what makes it readable rather than merely costly.\n",
+        );
+        out
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("BurstReport is serializable")
+    }
 }
 
 #[cfg(test)]
@@ -834,6 +921,76 @@ mod tests {
         assert!(
             simulate_burst(&cfg).is_err(),
             "3.6e12 requests must not be attempted"
+        );
+    }
+
+    #[test]
+    fn the_report_names_the_two_behaviours_and_says_which_one_it_chose() {
+        let cfg = BurstConfig {
+            capacity: 32,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 4_000.0,
+            duration: Duration::from_secs(1),
+            seed: 7,
+        };
+        let out = simulate_burst(&cfg).unwrap().render();
+        assert!(out.contains("EXHAUSTED"), "{out}");
+        assert!(out.contains("stall"), "{out}");
+        assert!(
+            out.contains("reuse"),
+            "the report must address reuse explicitly: {out}"
+        );
+        assert!(
+            out.contains("blinding-factor reuse events       0"),
+            "the reuse count must be printed, and it must be zero: {out}"
+        );
+    }
+
+    #[test]
+    fn a_healthy_run_reports_no_exhaustion() {
+        let cfg = BurstConfig {
+            capacity: 32,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 100.0,
+            duration: Duration::from_secs(1),
+            seed: 7,
+        };
+        let out = simulate_burst(&cfg).unwrap().render();
+        assert!(!out.contains("EXHAUSTED"), "{out}");
+    }
+
+    #[test]
+    fn json_reports_reuse_events_as_a_field() {
+        let cfg = BurstConfig {
+            capacity: 8,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 4_000.0,
+            duration: Duration::from_millis(500),
+            seed: 7,
+        };
+        let v = simulate_burst(&cfg).unwrap().to_json();
+        assert_eq!(v["reuse_events"], 0);
+        assert_eq!(v["exhausted"], true);
+    }
+
+    #[test]
+    fn json_carries_duration_fields_as_microsecond_numbers() {
+        let cfg = BurstConfig {
+            capacity: 8,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 4_000.0,
+            duration: Duration::from_millis(500),
+            seed: 7,
+        };
+        let v = simulate_burst(&cfg).unwrap().to_json();
+        assert!(
+            v["stall_max_us"].is_number(),
+            "stall_max must serialize as a microsecond number, not {:?}",
+            v["stall_max_us"]
         );
     }
 }
