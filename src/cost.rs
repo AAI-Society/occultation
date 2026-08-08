@@ -78,16 +78,22 @@ pub enum BudgetVerdict {
 impl std::fmt::Display for BudgetVerdict {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BudgetVerdict::Misses { over } => write!(f, "MISSES by {}", us(*over)),
+            BudgetVerdict::Misses { over } => write!(f, "MISSES by {}", fmt_ms(*over)),
             BudgetVerdict::Marginal { headroom } => {
-                write!(f, "MARGINAL — {} of headroom, which is none", us(*headroom))
+                write!(
+                    f,
+                    "MARGINAL — {} spare, which is not headroom",
+                    fmt_ms(*headroom)
+                )
             }
-            BudgetVerdict::Fits { headroom } => write!(f, "fits, {} spare", us(*headroom)),
+            BudgetVerdict::Fits { headroom } => write!(f, "fits, {} spare", fmt_ms(*headroom)),
         }
     }
 }
 
-pub fn us(d: Duration) -> String {
+/// Render a duration in milliseconds, which is the unit the 15 ms budget is
+/// quoted in and therefore the unit every verdict should read in.
+pub fn fmt_ms(d: Duration) -> String {
     format!("{:.2} ms", d.as_secs_f64() * 1e3)
 }
 

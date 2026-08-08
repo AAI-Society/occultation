@@ -7,6 +7,10 @@
 //! modelled and provide no security whatsoever.
 #![forbid(unsafe_code)]
 
+pub mod baseline;
 pub mod cost;
+pub mod harness;
 
-pub use cost::{compose, BudgetVerdict, Composed, CostProfile, Measurement, Source, BUDGET};
+pub use cost::{
+    compose, fmt_ms, judge, BudgetVerdict, Composed, CostProfile, Measurement, Source, BUDGET,
+};
