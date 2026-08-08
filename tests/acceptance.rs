@@ -251,18 +251,50 @@ fn a_fleet_with_tcb_drift_reports_its_partition_sizes() {
     assert_eq!(r.min_set, 1);
     assert_eq!(r.max_set, 71);
     assert_eq!(r.singletons, 1);
+    // Pinned to the value, not to a bound. `> 1.0` is cleared by a natural-log
+    // substitution at 1.019 — a 1.9% margin — so the paper's "1.470 bits" and
+    // the word "bits" itself would be a figure no test could notice changing.
     assert!(
-        r.effective_set < 60.0,
-        "effective set collapsed to {}",
+        (r.effective_set - 6328.0 / 120.0).abs() < 1e-9,
+        "effective set {} (expected sum(n^2)/N = 52.7333)",
         r.effective_set
     );
-    assert!(r.entropy_bits > 1.0);
+    assert!(
+        (r.entropy_bits - 1.470_103_8).abs() < 1e-6,
+        "entropy {} bits (expected 1.4701038; log2, not ln)",
+        r.entropy_bits
+    );
 
     // And it must say which attributes did it, or an operator cannot act.
     assert!(r
         .distinguishing_attributes
         .contains(&"microcode".to_string()));
     assert!(r.distinguishing_attributes.contains(&"pce_svn".to_string()));
+}
+
+/// The uniform fleet is the paper's control, so its report must not claim
+/// anything about singletons. `singletons > 0` -> `>= 0` survives the rest of
+/// the suite and makes that report say "0 host(s) are alone on their TCB
+/// configuration ... no credential scheme can help them", which is
+/// categorically false about the fleet the whole comparison rests on.
+#[test]
+fn a_uniform_fleets_report_makes_no_claim_about_singletons() {
+    let f = Fleet::load(Path::new("examples/fleet-uniform.toml")).unwrap();
+    let out = partition(&f).unwrap().render();
+    assert!(
+        !out.contains("alone on their TCB configuration"),
+        "a fleet with no singletons must not claim it has some:\n{out}"
+    );
+    assert!(
+        out.contains("No TCB attribute varies"),
+        "and it must say why:\n{out}"
+    );
+
+    // The converse, so neither sentence can simply be deleted.
+    let d = Fleet::load(Path::new("examples/fleet-drifted.toml")).unwrap();
+    let drifted = partition(&d).unwrap().render();
+    assert!(drifted.contains("alone on their TCB configuration"));
+    assert!(!drifted.contains("No TCB attribute varies"));
 }
 
 /// The policy exit code, so the check drops into a CI pipeline.

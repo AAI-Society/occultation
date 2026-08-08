@@ -181,7 +181,11 @@ pub fn partition(fleet: &Fleet) -> Result<AnonymityReport, AnonymityError> {
         median_set: sorted[sorted.len() / 2],
         max_set: *sorted.last().expect("non-empty"),
         singletons: sizes.iter().filter(|&&s| s == 1).count(),
-        effective_set: sizes.iter().map(|&s| (s * s) as f64).sum::<f64>() / n,
+        // Cast to f64 before multiplying: `(s * s)` in `usize` panics on
+        // overflow in debug and silently wraps in release for a hostile
+        // user-supplied `count` (e.g. 5_000_000_000), which would violate the
+        // no-panics-on-malformed-input constraint.
+        effective_set: sizes.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / n,
         entropy_bits: -sizes
             .iter()
             .map(|&s| {
@@ -211,7 +215,10 @@ impl AnonymityReport {
             self.max_set,
             self.singletons,
             self.effective_set,
-            self.entropy_bits
+            // `+ 0.0` so a zero-leakage fleet does not print "-0.000 bits":
+            // the sum is negated, and the negative-zero sign bit survives
+            // `{:.3}` formatting.
+            self.entropy_bits + 0.0
         ));
 
         out.push_str(&format!(
@@ -239,8 +246,16 @@ impl AnonymityReport {
                  partition it.\n",
             );
         } else {
+            // "that vary", not "doing the deanonymizing": the computation
+            // finds attributes taking more than one value, which is not the
+            // same as attributes that split anything another attribute does
+            // not already split — in the drifted example `pcs_chain` and
+            // `qe_identity` vary but partition nothing new, and an operator
+            // reading the stronger claim would remediate the wrong field.
             out.push_str(&format!(
-                "\nThe attributes doing the deanonymizing: {}.\n",
+                "\nThe attributes that vary across this fleet: {}.\n\
+                 (Varying is not the same as partitioning: some of these may split nothing\n\
+                 that another attribute does not already split.)\n",
                 self.distinguishing_attributes.join(", ")
             ));
         }
@@ -431,12 +446,17 @@ cpu_svn = "0x0E"
         // A fingerprint that dropped a field would silently merge two
         // distinguishable populations. Vary one attribute at a time and
         // require each to split the fleet.
+        // All SIX attributes the shipped examples use. Omitting one — this
+        // list previously stopped at five — leaves the single test standing
+        // between the paper and an overstated anonymity set blind to exactly
+        // the kind of omission it exists to catch.
         let fields = [
             "tdx_module",
             "cpu_svn",
             "pce_svn",
             "microcode",
             "qe_identity",
+            "pcs_chain",
         ];
         for varied in fields {
             let host = |id: &str, value: &str| {
@@ -501,10 +521,14 @@ tdx_module = "1.5.05"
 
     #[test]
     fn an_unknown_top_level_key_is_rejected_rather_than_ignored() {
-        let src = "name = \"z\"\nhosts = 5\n[[host]]\nid = \"a\"\n[host.tcb]\nx = \"1\"\n";
+        // `[[hosts]]` (plural) is the typo an operator would actually make
+        // for the array-of-tables key `[[host]]` — a scalar `hosts = 5`
+        // exercises the same `deny_unknown_fields` path but is not the shape
+        // this test's name and comment are about.
+        let src = "name = \"z\"\n[[hosts]]\nid = \"a\"\n[hosts.tcb]\nx = \"1\"\n";
         assert!(
             toml::from_str::<Fleet>(src).is_err(),
-            "`hosts` is a typo for `host`"
+            "`[[hosts]]` is a typo for `[[host]]`"
         );
     }
 
@@ -529,6 +553,36 @@ tdx_module = "1.5.05"
         // [1, 3, 8] ascending; the middle element is 3.
         let f: Fleet = toml::from_str(DRIFTED).unwrap();
         assert_eq!(partition(&f).unwrap().median_set, 3);
+    }
+
+    /// Correct today (`by_fp.into_values()` yields ascending fingerprint
+    /// order and `sort_by_key` is stable) but unpinned: nothing asserts it,
+    /// and Task 12 commits byte-stable `results/` artifacts that CI diffs, so
+    /// a future switch to `sort_unstable_by_key` would silently reorder equal
+    /// partitions with this whole suite green.
+    #[test]
+    fn equal_size_partitions_keep_deterministic_fingerprint_order() {
+        let src = r#"
+name = "tie"
+[[host]]
+id = "a"
+count = 5
+[host.tcb]
+x = "1"
+[[host]]
+id = "b"
+count = 5
+[host.tcb]
+x = "2"
+"#;
+        let f: Fleet = toml::from_str(src).unwrap();
+        let r = partition(&f).unwrap();
+        assert_eq!(
+            r.partitions[0].tcb.get("x").unwrap(),
+            "1",
+            "ties break by ascending fingerprint order"
+        );
+        assert_eq!(r.partitions[1].tcb.get("x").unwrap(), "2");
     }
 
     /// The doc comment on `fingerprint` claims the length-prefixing prevents
@@ -630,7 +684,7 @@ b = "y"
         );
 
         assert!(
-            out.contains("The attributes doing the deanonymizing: alpha, beta."),
+            out.contains("The attributes that vary across this fleet: alpha, beta."),
             "{out}"
         );
         assert!(
