@@ -434,17 +434,33 @@ mod tests {
             &mut rng(2),
         )
         .unwrap();
+        // Every field a relying party receives, not a sample of them.
+        // Unlinkability is the property the whole paper is about, so a
+        // transmitted field left unasserted here is a gap in the headline
+        // claim.
         assert_ne!(a.a_bar, b.a_bar);
         assert_ne!(a.b_bar, b.b_bar);
         assert_ne!(a.d, b.d);
         assert_ne!(a.challenge, b.challenge);
+        assert_ne!(a.e_hat, b.e_hat);
+        assert_ne!(a.r1_hat, b.r1_hat);
+        assert_ne!(a.r3_hat, b.r3_hat);
+        assert_eq!(a.m_hat.len(), b.m_hat.len());
+        for (i, (x, y)) in a.m_hat.iter().zip(&b.m_hat).enumerate() {
+            assert_ne!(
+                x, y,
+                "undisclosed response {i} repeats across presentations"
+            );
+        }
     }
 
     #[test]
     fn claiming_an_undisclosed_attribute_fails() {
-        // The verifier is told attribute 0 was disclosed as attribute 0's real
-        // value, but the prover never disclosed it. The index sets disagree,
-        // so the challenge does not reproduce.
+        // The verifier is told attribute 0 was disclosed as well, but the
+        // prover disclosed only attribute 1. The disclosed *counts* disagree,
+        // so this is rejected structurally, before anything is hashed —
+        // `substituting_one_disclosed_index_for_another_fails` is the test
+        // that exercises the cryptographic path.
         let f = fixture(5);
         let p = prove(
             &f.kp.pk,
@@ -459,6 +475,40 @@ mod tests {
         .unwrap();
         let lying = disclosed_pairs(&f, &[0, 1]);
         assert!(!verify_proof(&f.kp.pk, &f.gens, HEADER, PH, &lying, &p).unwrap());
+    }
+
+    /// The module's headline claim, exercised through the cryptography rather
+    /// than through a length check.
+    ///
+    /// `claiming_an_undisclosed_attribute_fails` above discloses a different
+    /// *number* of attributes than the prover did, so it is rejected by the
+    /// structural count comparison before anything is hashed. Substituting
+    /// one index for another at equal count is the attack that actually has
+    /// to be stopped by `Bv`, `T2` and the challenge.
+    #[test]
+    fn substituting_one_disclosed_index_for_another_fails() {
+        let f = fixture(5);
+        // The prover discloses attribute 1 and hides the rest.
+        let p = prove(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &f.sig,
+            &f.msgs,
+            &[1],
+            &mut rng(1),
+        )
+        .unwrap();
+        // The verifier is told attribute 0 was disclosed instead. Same count,
+        // so the length check cannot see it.
+        let substituted = disclosed_pairs(&f, &[0]);
+        assert_eq!(
+            substituted.len(),
+            1,
+            "equal count, or this tests the wrong thing"
+        );
+        assert!(!verify_proof(&f.kp.pk, &f.gens, HEADER, PH, &substituted, &p).unwrap());
     }
 
     #[test]
@@ -497,6 +547,99 @@ mod tests {
         )
         .unwrap();
         p.m_hat[0] += Scalar::ONE;
+        assert!(!verify_proof(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &disclosed_pairs(&f, &disclosed),
+            &p
+        )
+        .unwrap());
+    }
+
+    /// `T1` is the only thing proving `Bbar = D*r1 - Abar*e`, i.e. that `D`
+    /// and `(Abar, Bbar)` come from the same credential. Nothing else in the
+    /// proof constrains it: the pairing equation is a function of `Abar` and
+    /// `Bbar` alone, and `T2` only shows the prover can open `D`.
+    ///
+    /// `e_hat` and `r1_hat` are the only two transmitted fields whose sole
+    /// effect is on `T1`, so without these two tests, deleting `t1` from the
+    /// challenge preimage is a one-line change that leaves the whole suite
+    /// green — and it opens a replay forgery: take an `(Abar, Bbar)` observed
+    /// from someone else's presentation, pair it with your own `D` over
+    /// fabricated messages, pick `e_hat` and `r1_hat` at random, and both
+    /// remaining layers accept.
+    #[test]
+    fn a_tampered_e_hat_fails() {
+        let f = fixture(5);
+        let disclosed = [1usize];
+        let mut p = prove(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &f.sig,
+            &f.msgs,
+            &disclosed,
+            &mut rng(1),
+        )
+        .unwrap();
+        p.e_hat += Scalar::ONE;
+        assert!(!verify_proof(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &disclosed_pairs(&f, &disclosed),
+            &p
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn a_tampered_r1_hat_fails() {
+        let f = fixture(5);
+        let disclosed = [1usize];
+        let mut p = prove(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &f.sig,
+            &f.msgs,
+            &disclosed,
+            &mut rng(1),
+        )
+        .unwrap();
+        p.r1_hat += Scalar::ONE;
+        assert!(!verify_proof(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &disclosed_pairs(&f, &disclosed),
+            &p
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn a_tampered_r3_hat_fails() {
+        let f = fixture(5);
+        let disclosed = [1usize];
+        let mut p = prove(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &f.sig,
+            &f.msgs,
+            &disclosed,
+            &mut rng(1),
+        )
+        .unwrap();
+        p.r3_hat += Scalar::ONE;
         assert!(!verify_proof(
             &f.kp.pk,
             &f.gens,
@@ -562,6 +705,33 @@ mod tests {
     }
 
     #[test]
+    fn a_different_header_fails() {
+        // Every other negative test varies `ph`; `header` binds only
+        // transitively, through `domain` into `Bv`.
+        let f = fixture(5);
+        let p = prove(
+            &f.kp.pk,
+            &f.gens,
+            HEADER,
+            PH,
+            &f.sig,
+            &f.msgs,
+            &[1],
+            &mut rng(1),
+        )
+        .unwrap();
+        assert!(!verify_proof(
+            &f.kp.pk,
+            &f.gens,
+            b"a different header",
+            PH,
+            &disclosed_pairs(&f, &[1]),
+            &p
+        )
+        .unwrap());
+    }
+
+    #[test]
     fn another_issuers_key_fails() {
         let f = fixture(5);
         let other = KeyPair::generate(8);
@@ -589,8 +759,10 @@ mod tests {
 
     #[test]
     fn an_identity_a_bar_is_rejected() {
-        // Abar = identity satisfies the pairing equation for any Bbar = identity
-        // and must be rejected explicitly, not left to the Schnorr layer.
+        // Zeroing Abar on a finished proof also breaks the challenge preimage
+        // and the T1 reconstruction, so the Schnorr layer is what rejects
+        // this one. `a_self_consistent_forgery_via_r1_zero_is_rejected` is
+        // the test that reaches the identity check itself.
         let f = fixture(3);
         let mut p = prove(
             &f.kp.pk,
@@ -605,6 +777,20 @@ mod tests {
         .unwrap();
         p.a_bar = G1Projective::identity();
         assert!(!verify_proof(&f.kp.pk, &f.gens, HEADER, PH, &[], &p).unwrap());
+    }
+
+    #[test]
+    fn a_message_count_mismatch_is_an_error_not_an_out_of_bounds() {
+        // `msgs[i]` is indexed with an index range-checked against
+        // `gens.len()`, not `msgs.len()`. It is safe only because
+        // `Generators::b` runs first and rejects the mismatch. Pin that
+        // ordering: reordering the two statements would reintroduce a panic.
+        let f = fixture(3);
+        let s = ProofScalars::random(&mut rng(1), 2);
+        assert!(
+            prove_with_scalars(&f.kp.pk, &f.gens, HEADER, PH, &f.sig, &[], &[0], &s).is_err(),
+            "no messages but a disclosed index must be an error, not a panic"
+        );
     }
 
     #[test]
