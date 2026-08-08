@@ -993,4 +993,64 @@ mod tests {
             v["stall_max_us"]
         );
     }
+
+    /// `is_number()` alone would not catch a wrong scale factor (seconds,
+    /// milliseconds, or nanoseconds instead of microseconds) or a dropped
+    /// multiplier. This pins the actual magnitude: with a refill rate well
+    /// above the burst rate nothing ever stalls, so every latency is exactly
+    /// `online_cost`, and its JSON microsecond figure must equal it exactly.
+    #[test]
+    fn json_duration_fields_carry_correct_microsecond_values_not_just_numbers() {
+        let cfg = BurstConfig {
+            capacity: 8,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 100.0, // well under refill; nothing stalls
+            duration: Duration::from_millis(500),
+            seed: 7,
+        };
+        let v = simulate_burst(&cfg).unwrap().to_json();
+        assert_eq!(
+            v["latency_p50_us"].as_f64().unwrap(),
+            50.0,
+            "an unstalled 50us online cost must serialize as exactly 50.0, not a different scale: {v}"
+        );
+        assert_eq!(v["stall_max_us"].as_f64().unwrap(), 0.0);
+    }
+
+    /// `simulate_burst` can never actually produce a nonzero `reuse_events`
+    /// (that is the whole point of the pool), so no run through it can catch
+    /// `render` printing a hardcoded `0` instead of `self.reuse_events` —
+    /// every test above would stay green even if the field were ignored.
+    /// Construct a report by hand, with every field `pub` for exactly this
+    /// reason, to pin the rendering wiring independently of the invariant.
+    #[test]
+    fn render_prints_the_actual_reuse_count_not_a_hardcoded_zero() {
+        let report = BurstReport {
+            requests: 10,
+            served_immediately: 10,
+            stalled: 0,
+            exhausted: false,
+            refill_rate_hz: 1000.0,
+            burst_rate_hz: 100.0,
+            stall_total: Duration::ZERO,
+            stall_max: Duration::ZERO,
+            latency_p50: Duration::from_micros(50),
+            latency_p95: Duration::from_micros(50),
+            latency_p99: Duration::from_micros(50),
+            latency_max: Duration::from_micros(50),
+            amplification: 1.0,
+            distinct_blinding_factors: 7,
+            reuse_events: 3,
+            pool_exhaustions: 0,
+            overload_factor: 0.1,
+            growth_per_request: 0.0,
+            onset_request: None,
+        };
+        let out = report.render();
+        assert!(
+            out.contains("blinding-factor reuse events       3"),
+            "render must print the actual reuse_events field, not a hardcoded zero: {out}"
+        );
+    }
 }
