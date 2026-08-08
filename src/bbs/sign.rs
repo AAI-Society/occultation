@@ -290,11 +290,33 @@ mod tests {
             base
         );
 
+        // Varying the key alone is NOT enough to show `sk` participates:
+        // `calculate_domain` already hashes `pk`, `domain` feeds `e`'s
+        // preimage, and `KeyPair::generate` moves `sk` and `pk` together — so
+        // this assertion passes even if `sk` is dropped from the preimage
+        // entirely. It is here to pin the whole-key channel, and the next
+        // assertion is what actually isolates `sk`.
         let other = KeyPair::generate(8);
         assert_ne!(
             sign(&other.sk, &other.pk, &gens, HEADER, &msgs).unwrap().e,
-            base,
-            "e is derived from the secret key so that it is not publicly computable"
+            base
+        );
+
+        // Hold `pk` — and therefore `domain` — fixed while varying `sk` only.
+        // `sign` takes the two separately, so a deliberately mismatched pair
+        // isolates the secret key's contribution. The resulting signature
+        // verifies under nothing, which is fine: only `e` is read.
+        //
+        // On severity, stated honestly: dropping `sk` here is a deviation
+        // from the draft rather than a break. `e` is published as part of the
+        // signature, so it is not secret in any case, and `domain` already
+        // separates issuers. What matters is that a clause of a
+        // security-relevant derivation should not go untested.
+        let mismatched_a = sign(&kp.sk, &other.pk, &gens, HEADER, &msgs).unwrap().e;
+        let mismatched_b = sign(&other.sk, &other.pk, &gens, HEADER, &msgs).unwrap().e;
+        assert_ne!(
+            mismatched_a, mismatched_b,
+            "the same pk gives the same domain, so only sk differs here; e must too"
         );
 
         // Message order must matter too, not just message content.
