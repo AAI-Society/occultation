@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod baseline;
+pub mod bbs;
 pub mod bls;
 pub mod cost;
 pub mod ecdaa;
