@@ -1,0 +1,6 @@
+/target
+paper/*.pdf
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/_minted*

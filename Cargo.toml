@@ -1,0 +1,48 @@
+[package]
+name = "occultation"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "Apache-2.0"
+description = "Measure what verifiable unlinkability costs at agent action rates"
+repository = "https://github.com/Task-force-for-AI-agents-in-Healthcare/occultation"
+
+[lib]
+name = "occultation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "occultation"
+path = "src/bin/occultation.rs"
+
+[dependencies]
+# BLS12-381. Pins ff/group 0.13, hence rand_core 0.6 below.
+blstrs = "0.7"
+group = "0.13"
+ff = "0.13"
+pairing = "0.23"
+# ed25519-dalek 3.x needs rand_core 0.9 and will not compile alongside
+# blstrs' rand_core 0.6. Pinned to 2.x deliberately; see README.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = "0.6"
+rand_chacha = "0.3"
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+humantime = "2"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+criterion = "0.8"
+
+[[bench]]
+name = "primitives"
+harness = false
+
+[profile.release]
+debug = true          # benchmarks are worth profiling
