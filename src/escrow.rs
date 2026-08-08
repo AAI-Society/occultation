@@ -1,5 +1,5 @@
 use crate::modelled::{
-    EscrowTag, ModelledError, ModelledPermit, Provenance, Tag, MODELLED_WARNING,
+    EscrowTag, ModelledError, ModelledPermit, Opening, Provenance, Tag, MODELLED_WARNING,
 };
 use blstrs::{G1Projective, Scalar};
 use ff::Field;
@@ -67,6 +67,9 @@ impl EscrowTag for ModelledThresholdElGamal {
         log::warn!("{MODELLED_WARNING}");
         // Representative work: a real tag is two G1 elements plus a DLEQ proof,
         // which is four scalar multiplications and change.
+        // A fixed seed, not derived from the identity: the group work here is
+        // a cost stand-in and is identical for every input, which is one more
+        // reason nothing about this tag is secret.
         let mut rng = ChaCha20Rng::seed_from_u64(0xE5C0);
         let mut acc = G1Projective::identity();
         for _ in 0..4 {
@@ -75,13 +78,10 @@ impl EscrowTag for ModelledThresholdElGamal {
         let mut bytes = b"MODELLED-ESCROW-TAG:".to_vec();
         bytes.extend_from_slice(identity); // in the clear, on purpose
         bytes.extend_from_slice(&acc.to_compressed());
-        Ok(Tag {
-            bytes,
-            provenance: self.provenance(),
-        })
+        Ok(Tag::new(bytes, self.provenance()))
     }
 
-    fn open(&self, tag: &Tag, shares: usize) -> Result<String, ModelledError> {
+    fn open(&self, tag: &Tag, shares: usize) -> Result<Opening, ModelledError> {
         log::warn!("{MODELLED_WARNING}");
         if shares < self.k {
             return Err(ModelledError::BadThreshold {
@@ -90,12 +90,17 @@ impl EscrowTag for ModelledThresholdElGamal {
                 reason: "fewer cooperating shares than the threshold",
             });
         }
+        // `tag` is deliberately not read. The modelled tag carries the
+        // identity in plaintext, and touching it here would create the one
+        // path by which a modelled opening could return a real identity.
         let _ = tag;
-        // Not the identity. A caller that treats this as an accountable
-        // opening gets a string that says it is not one.
-        Ok(format!(
-            "MODELLED opening ({}-of-{}): no identity was recovered, because nothing was escrowed",
-            self.k, self.n
+        Ok(Opening::new(
+            format!(
+                "MODELLED opening ({}-of-{}): no identity was recovered, because nothing \
+                 was escrowed",
+                self.k, self.n
+            ),
+            self.provenance(),
         ))
     }
 }
@@ -112,10 +117,11 @@ mod tests {
         ModelledThresholdElGamal::new(ModelledPermit::from_flag(true).unwrap(), k, n)
     }
 
+    /// Compile-time, for the same reason as in `ecdaa.rs`: flipping
+    /// `MODELLED` to false must break the build, not just a test run.
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn it_declares_itself_modelled() {
-        assert!(ModelledThresholdElGamal::MODELLED);
+        const _: () = assert!(ModelledThresholdElGamal::MODELLED);
         assert!(matches!(
             stub(3, 5).unwrap().provenance(),
             Provenance::Modelled { .. }
@@ -135,9 +141,12 @@ mod tests {
     #[test]
     fn the_tag_hides_nothing_and_the_test_says_so() {
         let s = stub(3, 5).unwrap();
-        let tag = s.tag(b"did:web:agent-42").unwrap();
+        let identity: &[u8] = b"did:web:agent-42";
+        let tag = s.tag(identity).unwrap();
+        // The window width comes off the identity, so changing the literal
+        // cannot silently turn this into a scan of the wrong width.
         assert!(
-            tag.bytes.windows(16).any(|w| w == &b"did:web:agent-42"[..]),
+            tag.bytes.windows(identity.len()).any(|w| w == identity),
             "the modelled tag carries the identity in the clear, on purpose"
         );
     }
@@ -151,12 +160,25 @@ mod tests {
         // a modelled opening as an accountable one.
         assert!(s.open(&tag, 2).is_err(), "2 shares is below 3-of-5");
         let opened = s.open(&tag, 3).unwrap();
-        assert!(opened.contains("MODELLED"), "got {opened}");
+        assert!(
+            !opened.recovered_identity(),
+            "a modelled opening recovers nothing"
+        );
+        assert!(matches!(opened.provenance(), Provenance::Modelled { .. }));
+        assert!(
+            opened.description.contains("MODELLED"),
+            "got {}",
+            opened.description
+        );
+        assert!(
+            !opened.description.contains("did:web:agent-42"),
+            "the opening must not echo the identity the tag carries in the clear"
+        );
     }
 
     #[test]
     fn the_tag_is_labelled_modelled() {
         let tag = stub(3, 5).unwrap().tag(b"x").unwrap();
-        assert!(matches!(tag.provenance, Provenance::Modelled { .. }));
+        assert!(matches!(tag.provenance(), Provenance::Modelled { .. }));
     }
 }

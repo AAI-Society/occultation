@@ -19,8 +19,8 @@ const WHY: &str = "ECDAA is not implemented; this is a cost stand-in";
 /// a platform identifier, and its `verify` accepts nothing — it cannot return
 /// `Valid`.
 ///
-/// Constructing one requires a `ModelledPermit`, which only `--allow-modelled`
-/// produces.
+/// Constructing one requires a `ModelledPermit`. Once the CLI is wired
+/// (Task 7), `--allow-modelled` is the only thing that produces one.
 pub struct ModelledEcdaa {
     _permit: ModelledPermit,
 }
@@ -56,10 +56,7 @@ impl AnonymousAttestation for ModelledEcdaa {
         }
         let mut bytes = acc.to_compressed().to_vec();
         bytes.extend_from_slice(&Sha256::digest(measurement));
-        Ok(Attestation {
-            bytes,
-            provenance: self.provenance(),
-        })
+        Ok(Attestation::new(bytes, self.provenance()))
     }
 
     fn verify(&self, _measurement: &[u8], _attestation: &Attestation) -> AttestationVerdict {
@@ -80,10 +77,13 @@ mod tests {
         ModelledEcdaa::new(ModelledPermit::from_flag(true).unwrap())
     }
 
+    /// `const _: () = assert!(..)` rather than a runtime `assert!`: a bare
+    /// `assert!` on a constant is both a clippy lint and a weaker check.
+    /// This form fails to *compile* if `MODELLED` is ever flipped to false,
+    /// which is the guarantee worth having for a security barrier.
     #[test]
-    #[allow(clippy::assertions_on_constants)]
     fn it_declares_itself_modelled() {
-        assert!(ModelledEcdaa::MODELLED);
+        const _: () = assert!(ModelledEcdaa::MODELLED);
         assert!(matches!(stub().provenance(), Provenance::Modelled { .. }));
     }
 
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn the_attestation_it_produces_is_labelled_modelled() {
         let a = stub().attest(b"m").unwrap();
-        assert!(matches!(a.provenance, Provenance::Modelled { .. }));
+        assert!(matches!(a.provenance(), Provenance::Modelled { .. }));
     }
 
     /// The cost profile has to be representative or the composed bench is

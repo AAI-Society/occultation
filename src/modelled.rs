@@ -1,7 +1,7 @@
 use serde::Serialize;
 
-/// Printed by the binary before any modelled code runs, and logged by every
-/// modelled invocation.
+/// Logged by every modelled invocation, and printed by the binary before any
+/// modelled code runs once the CLI is wired (Task 7).
 pub const MODELLED_WARNING: &str = "\
 WARNING: MODELLED COMPONENT IN USE. ECDAA and threshold ElGamal escrow are
 stubs providing no security: no anonymity, no soundness, no confidentiality
@@ -92,17 +92,77 @@ impl AttestationVerdict {
 }
 
 /// An anonymous platform attestation.
+///
+/// `provenance` is private with a `pub(crate)` constructor so that downstream
+/// code cannot build an `Attestation` that claims to be `Real` from a value a
+/// stub produced. Barrier 4 is then structural rather than conventional.
+/// `bytes` stays public: a test needs to tamper with it.
 #[derive(Clone, Debug)]
 pub struct Attestation {
     pub bytes: Vec<u8>,
-    pub provenance: Provenance,
+    provenance: Provenance,
+}
+
+impl Attestation {
+    pub(crate) fn new(bytes: Vec<u8>, provenance: Provenance) -> Self {
+        Attestation { bytes, provenance }
+    }
+
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
 }
 
 /// An escrow tag binding an action to a recoverable identity.
 #[derive(Clone, Debug)]
 pub struct Tag {
     pub bytes: Vec<u8>,
-    pub provenance: Provenance,
+    provenance: Provenance,
+}
+
+impl Tag {
+    pub(crate) fn new(bytes: Vec<u8>, provenance: Provenance) -> Self {
+        Tag { bytes, provenance }
+    }
+
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// The result of an escrow opening.
+///
+/// A distinct type rather than a `String`, for the same reason
+/// `AttestationVerdict` has a `ModelledNoSecurity` variant: generic code
+/// written against `EscrowTag` — which is exactly the shape a future real
+/// implementation invites — would otherwise bind `Ok(s)` as "the recovered
+/// identity", and the only thing stopping it would be the *content* of the
+/// string, which no type checks and no caller is obliged to read.
+#[derive(Clone, Debug)]
+pub struct Opening {
+    /// What the opening produced. For a modelled implementation this is a
+    /// statement that nothing was recovered, never an identity.
+    pub description: String,
+    provenance: Provenance,
+}
+
+impl Opening {
+    pub(crate) fn new(description: String, provenance: Provenance) -> Self {
+        Opening {
+            description,
+            provenance,
+        }
+    }
+
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+
+    /// Whether this opening recovered an identity. Always false for a
+    /// modelled implementation, and the only honest way to ask.
+    pub fn recovered_identity(&self) -> bool {
+        matches!(self.provenance, Provenance::Real { .. })
+    }
 }
 
 /// Prove membership in a valid TEE group without emitting a platform
@@ -128,8 +188,12 @@ pub trait EscrowTag {
 
     fn provenance(&self) -> Provenance;
     fn tag(&self, identity: &[u8]) -> Result<Tag, ModelledError>;
-    /// Recover the identity given `shares` cooperating nodes.
-    fn open(&self, tag: &Tag, shares: usize) -> Result<String, ModelledError>;
+    /// Attempt to recover the identity given `shares` cooperating nodes.
+    ///
+    /// Returns an `Opening`, not a `String`: a caller must ask
+    /// `Opening::recovered_identity()` rather than assume `Ok` means an
+    /// identity came back.
+    fn open(&self, tag: &Tag, shares: usize) -> Result<Opening, ModelledError>;
 }
 
 #[cfg(test)]
@@ -176,6 +240,36 @@ mod tests {
             component: "BBS+ proof verification",
         };
         assert!(!format!("{p}").contains("MODELLED"));
+    }
+
+    #[test]
+    fn independently_built_identical_provenances_compare_equal() {
+        // The report layer groups and deduplicates on this value, so
+        // semantically identical inputs must compare equal.
+        let a = Provenance::Modelled {
+            component: "ECDAA",
+            reason: "stub",
+        };
+        let b = Provenance::Modelled {
+            component: "ECDAA",
+            reason: "stub",
+        };
+        assert_eq!(a, b);
+        assert_ne!(
+            a,
+            Provenance::Modelled {
+                component: "escrow",
+                reason: "stub",
+            }
+        );
+        assert_ne!(
+            a,
+            Provenance::Modelled {
+                component: "ECDAA",
+                reason: "other",
+            }
+        );
+        assert_ne!(a, Provenance::Real { component: "ECDAA" });
     }
 
     #[test]
