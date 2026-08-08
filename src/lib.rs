@@ -7,6 +7,7 @@
 //! modelled and provide no security whatsoever.
 #![forbid(unsafe_code)]
 
+pub mod anonymity;
 pub mod baseline;
 pub mod bbs;
 pub mod bench;

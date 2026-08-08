@@ -1,0 +1,64 @@
+# The same 120 hosts, six weeks later. Nothing here is unusual — this is what
+# a fleet looks like when a microcode rollout is 60% done and one rack missed
+# the last two maintenance windows.
+name = "acme-prod-drifted"
+
+[[host]]
+id = "us-east-pool-patched"
+count = 71
+
+[host.tcb]
+tdx_module = "1.5.05"
+cpu_svn = "0x0e"
+pce_svn = "13"
+microcode = "0x2b000603"
+qe_identity = "v2.1"
+pcs_chain = "intel-pcs-2026h1"
+
+[[host]]
+id = "us-east-pool-pending"
+count = 34
+
+[host.tcb]
+tdx_module = "1.5.05"
+cpu_svn = "0x0e"
+pce_svn = "12"
+microcode = "0x2b000603"
+qe_identity = "v2.1"
+pcs_chain = "intel-pcs-2026h1"
+
+[[host]]
+id = "eu-west-rack-7"
+count = 11
+
+[host.tcb]
+tdx_module = "1.5.03"
+cpu_svn = "0x0d"
+pce_svn = "12"
+microcode = "0x2b000401"
+qe_identity = "v2.0"
+pcs_chain = "intel-pcs-2025h2"
+
+[[host]]
+id = "us-east-canary"
+count = 3
+
+[host.tcb]
+tdx_module = "1.5.05"
+cpu_svn = "0x0e"
+pce_svn = "13"
+microcode = "0x2b000701"
+qe_identity = "v2.1"
+pcs_chain = "intel-pcs-2026h1"
+
+[[host]]
+id = "us-east-rebuilt-0419"
+count = 1
+
+[host.tcb]
+tdx_module = "1.5.06"
+cpu_svn = "0x0f"
+pce_svn = "14"
+microcode = "0x2b000701"
+qe_identity = "v2.2"
+pcs_chain = "intel-pcs-2026h1"

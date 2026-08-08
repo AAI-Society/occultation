@@ -215,3 +215,62 @@ fn reuse_would_hand_over_the_signature_and_every_hidden_attribute() {
         assert_eq!((p1.m_hat[k] - p2.m_hat[k]) * dc, msgs[j]);
     }
 }
+
+use occultation::anonymity::{partition, Fleet};
+use std::path::Path;
+
+/// Acceptance test 3 — a single-TCB fleet is one anonymity set the size of the
+/// fleet; a drifted fleet reports its partition sizes.
+#[test]
+fn a_single_tcb_fleet_has_an_anonymity_set_equal_to_the_fleet() {
+    let f = Fleet::load(Path::new("examples/fleet-uniform.toml")).unwrap();
+    let r = partition(&f).unwrap();
+    assert_eq!(r.fleet_size, 120);
+    assert_eq!(r.partitions.len(), 1);
+    assert_eq!(r.partitions[0].size, r.fleet_size);
+    assert_eq!(r.min_set, 120);
+    assert_eq!(r.singletons, 0);
+    assert!((r.effective_set - 120.0).abs() < 1e-9);
+    assert!(
+        r.entropy_bits.abs() < 1e-12,
+        "a uniform fleet leaks no bits"
+    );
+}
+
+#[test]
+fn a_fleet_with_tcb_drift_reports_its_partition_sizes() {
+    let f = Fleet::load(Path::new("examples/fleet-drifted.toml")).unwrap();
+    let r = partition(&f).unwrap();
+
+    assert_eq!(r.fleet_size, 120, "the same 120 hosts as the uniform fleet");
+    let sizes: Vec<usize> = r.partitions.iter().map(|p| p.size).collect();
+    assert_eq!(sizes, vec![71, 34, 11, 3, 1]);
+
+    // The finding: identical hardware, six weeks of ordinary drift, and the
+    // largest anonymity set is now 71 rather than 120 — with one host alone.
+    assert_eq!(r.min_set, 1);
+    assert_eq!(r.max_set, 71);
+    assert_eq!(r.singletons, 1);
+    assert!(
+        r.effective_set < 60.0,
+        "effective set collapsed to {}",
+        r.effective_set
+    );
+    assert!(r.entropy_bits > 1.0);
+
+    // And it must say which attributes did it, or an operator cannot act.
+    assert!(r
+        .distinguishing_attributes
+        .contains(&"microcode".to_string()));
+    assert!(r.distinguishing_attributes.contains(&"pce_svn".to_string()));
+}
+
+/// The policy exit code, so the check drops into a CI pipeline.
+#[test]
+fn a_minimum_set_size_policy_is_enforceable() {
+    let f = Fleet::load(Path::new("examples/fleet-drifted.toml")).unwrap();
+    assert!(
+        partition(&f).unwrap().min_set < 10,
+        "the CLI must exit 1 for --min-set 10"
+    );
+}

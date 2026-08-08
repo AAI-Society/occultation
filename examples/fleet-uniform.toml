@@ -1,0 +1,17 @@
+# A fleet whose hosts are indistinguishable by quote collateral: one TDX
+# module version, one CPU SVN, one PCE SVN, one microcode revision. This is
+# what the construction assumes, and it is what a fleet looks like only
+# immediately after a synchronized rollout.
+name = "acme-prod-uniform"
+
+[[host]]
+id = "us-east-pool"
+count = 120
+
+[host.tcb]
+tdx_module = "1.5.05"
+cpu_svn = "0x0e"
+pce_svn = "13"
+microcode = "0x2b000603"
+qe_identity = "v2.1"
+pcs_chain = "intel-pcs-2026h1"

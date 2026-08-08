@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use occultation::bench::{run_bench, BenchOptions};
 use occultation::modelled::MODELLED_WARNING;
 use occultation::report::Format;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -61,6 +62,16 @@ enum Cmd {
         max_stall: Option<humantime::Duration>,
         #[arg(long, default_value_t = 7)]
         seed: u64,
+        #[arg(long, default_value = "table")]
+        format: Format,
+    },
+    /// Anonymity set size given TCB configuration diversity
+    Anonymity {
+        #[arg(long)]
+        fleet: PathBuf,
+        /// Exit 1 if any anonymity set is smaller than this
+        #[arg(long)]
+        min_set: Option<usize>,
         #[arg(long, default_value = "table")]
         format: Format,
     },
@@ -208,6 +219,28 @@ fn run() -> Result<ExitCode> {
                         "VIOLATION: worst stall {:?} exceeds --max-stall {:?}",
                         report.stall_max,
                         Duration::from(limit)
+                    );
+                    return Ok(ExitCode::from(1));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Cmd::Anonymity {
+            fleet,
+            min_set,
+            format,
+        } => {
+            let f = occultation::anonymity::Fleet::load(&fleet)?;
+            let report = occultation::anonymity::partition(&f)?;
+            match format {
+                Format::Table => println!("{}", report.render()),
+                Format::Json => println!("{}", serde_json::to_string_pretty(&report.to_json())?),
+            }
+            if let Some(k) = min_set {
+                if report.min_set < k {
+                    eprintln!(
+                        "VIOLATION: smallest anonymity set is {}, policy requires {k}",
+                        report.min_set
                     );
                     return Ok(ExitCode::from(1));
                 }
