@@ -9,12 +9,14 @@
 
 pub mod baseline;
 pub mod bbs;
+pub mod bench;
 pub mod bls;
 pub mod cost;
 pub mod ecdaa;
 pub mod escrow;
 pub mod harness;
 pub mod modelled;
+pub mod report;
 
 pub use cost::{
     compose, fmt_ms, judge, BudgetVerdict, Composed, CostProfile, Measurement, Source, BUDGET,
