@@ -17,9 +17,14 @@ confidentiality, and no accountability.** They exist so that the cost of the
 composed path can be estimated, and for nothing else. Using them for anything
 that matters would be a serious mistake.
 
-They require `--allow-modelled`. Without it the tool exits 3 and explains why.
-With it, every invocation logs a warning and every number they produce is
-printed with `MODELLED` beside it.
+They never execute without `--allow-modelled`: plain `occultation bench` omits
+them and says so in the table's footer. Explicitly asking for one without
+accepting it is different from merely omitting the flag — `bench --composed
+--with-escrow` requests the modelled escrow tag, and without `--allow-modelled`
+alongside it the tool exits 3 and explains why, rather than silently running a
+component that provides no security. With `--allow-modelled`, every invocation
+logs a warning and every number these components produce is printed with
+`MODELLED` beside it.
 
 ### Real but not interoperable
 
@@ -40,10 +45,14 @@ pre-computation pool, the anonymity-set calculator, and the timing harness.
 
 ## Where the numbers come from
 
-Every figure the tool prints is tagged. `measured here (n=…)` was timed on the
-host that produced the output. `PUBLISHED — …` was read from a publication and
-was **not** measured on this stack; the citation is printed with it. There is
-no third state and no untagged number.
+Every figure the tool prints is tagged, and no number is untagged. `measured
+here (n=…)` was timed on the host that produced the output. `PUBLISHED — …`
+was read from a publication and was **not** measured on this stack; the
+citation is printed with it. `bench --composed` has a third tag, `ESTIMATED`,
+for exactly one row — the pooled presentation is not measured by `bench`
+itself, so that row is derived from a cheaper proxy and says so in its own
+note and in its `origin.kind` in `--format json`. `occultation pool` measures
+the real thing instead of estimating it.
 
 ## Commands
 
