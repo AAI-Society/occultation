@@ -6,33 +6,33 @@
     {
       "cost_us": 7.417000000000001,
       "label": "Ed25519 sign",
-      "p95_us": 7.541,
+      "p95_us": 7.5,
       "provenance": {
         "component": "Ed25519 sign",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.2922955665024631,
+      "ratio_to_ed25519": 0.29276861135233284,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 17.958,
+      "cost_us": 17.917,
       "label": "Ed25519 verify",
-      "p95_us": 18.042,
+      "p95_us": 18.0,
       "provenance": {
         "component": "Ed25519 verify",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.707704433497537,
+      "ratio_to_ed25519": 0.7072313886476672,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 25.375,
+      "cost_us": 25.334,
       "label": "Ed25519 sign + verify (baseline)",
       "p95_us": null,
       "provenance": {
@@ -46,14 +46,14 @@
       }
     },
     {
-      "cost_us": 39.417,
+      "cost_us": 39.375,
       "label": "G1 scalar multiplication",
-      "p95_us": 39.625,
+      "p95_us": 39.583999999999996,
       "provenance": {
         "component": "G1 scalar multiplication",
         "kind": "real"
       },
-      "ratio_to_ed25519": 1.5533793103448275,
+      "ratio_to_ed25519": 1.554235414857504,
       "source": {
         "iters": 200,
         "kind": "measured_here"
@@ -62,82 +62,82 @@
     {
       "cost_us": 2.125,
       "label": "hash_to_scalar",
-      "p95_us": 2.1670000000000003,
+      "p95_us": 2.166,
       "provenance": {
         "component": "hash_to_scalar",
         "kind": "real"
       },
-      "ratio_to_ed25519": 0.08374384236453201,
+      "ratio_to_ed25519": 0.08387937159548434,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 208.834,
+      "cost_us": 209.45800000000003,
       "label": "BBS+ sign (issuer)",
-      "p95_us": 233.0,
+      "p95_us": 237.042,
       "provenance": {
         "component": "BBS+ sign (issuer)",
         "kind": "real"
       },
-      "ratio_to_ed25519": 8.22991133004926,
+      "ratio_to_ed25519": 8.267861372069158,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 648.75,
+      "cost_us": 648.1669999999999,
       "label": "BBS+ signature verify (holder)",
-      "p95_us": 699.958,
+      "p95_us": 699.75,
       "provenance": {
         "component": "BBS+ signature verify (holder)",
         "kind": "real"
       },
-      "ratio_to_ed25519": 25.56650246305419,
+      "ratio_to_ed25519": 25.5848661877319,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 542.541,
+      "cost_us": 542.75,
       "label": "BBS+ presentation",
-      "p95_us": 590.625,
+      "p95_us": 592.666,
       "provenance": {
         "component": "BBS+ presentation",
         "kind": "real"
       },
-      "ratio_to_ed25519": 21.380926108374386,
+      "ratio_to_ed25519": 21.423778321623118,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 772.667,
+      "cost_us": 770.375,
       "label": "BBS+ proof verify",
-      "p95_us": 803.3330000000001,
+      "p95_us": 798.625,
       "provenance": {
         "component": "BBS+ proof verify",
         "kind": "real"
       },
-      "ratio_to_ed25519": 30.44993103448276,
+      "ratio_to_ed25519": 30.408739243704115,
       "source": {
         "iters": 200,
         "kind": "measured_here"
       }
     },
     {
-      "cost_us": 689.0,
+      "cost_us": 692.25,
       "label": "BBS+ proof verify, cached pairings",
-      "p95_us": 726.4590000000001,
+      "p95_us": 717.584,
       "provenance": {
         "component": "BBS+ proof verify, cached pairings",
         "kind": "real"
       },
-      "ratio_to_ed25519": 27.152709359605915,
+      "ratio_to_ed25519": 27.324938817399545,
       "source": {
         "iters": 200,
         "kind": "measured_here"

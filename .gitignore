@@ -4,3 +4,6 @@ paper/*.aux
 paper/*.log
 paper/*.out
 paper/_minted*
+paper/*.bbl
+paper/*.blg
+paper/*.toc

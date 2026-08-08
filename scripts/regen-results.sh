@@ -8,6 +8,25 @@
 # results/measured/ is wall-clock timing and differs per host. CI regenerates
 # it and checks its schema and tool version, but cannot diff it: a build that
 # failed because the machine was 3% busier would train everyone to ignore CI.
+#
+# This script also emits the `tabular` files paper/main.tex `\input`s under
+# \section{Results}: composed-table.tex and anonymity-table.tex are
+# arithmetic over the desk study's published constants and a fixed fleet
+# file respectively, so they are exactly as host-independent as the JSON
+# they are read from and belong in deterministic/, diffed by CI.
+# primitives-table.tex is read from the wall-clock primitives.json and
+# belongs in measured/, not diffed, for the same reason primitives.json
+# itself is not. Every number in these files is read out of already-written
+# JSON with jq; nothing here is typed by hand.
+#
+# Two more files beyond the three tables the paper's task brief names:
+# pool-facts.tex (deterministic; a seeded burst simulation) and
+# composed-facts.tex (measured; wall-clock, not diffed) define \newcommand
+# macros for figures the paper's prose cites but that do not belong in any
+# of the three tables — the pool's amplification/overload/growth figures, and
+# the measured-vs-published divergence factor and per-side cached-pairing
+# savings. The paper's governing constraint is that no number is typed by
+# hand; these exist so that constraint holds outside the tables too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo build --release --quiet
@@ -44,5 +63,359 @@ done
 "$BIN" bench --iters 200 > results/measured/primitives.txt
 "$BIN" bench --composed --iters 200 --format json > results/measured/composed.json
 "$BIN" bench --composed --iters 200 > results/measured/composed.txt
+
+# --- LaTeX tables for the paper -----------------------------------------
+# Force the C locale for number formatting so a decimal comma locale cannot
+# make these files (composed-table.tex, anonymity-table.tex) fail the CI
+# diff on a contributor's machine.
+export LC_ALL=C
+
+# Milliseconds, two decimal places, matching src/cost.rs's fmt_ms.
+fmt_ms() {
+  awk -v n="$1" 'BEGIN{printf "%.2f", n / 1000000}'
+}
+
+# Escape LaTeX's special characters in a string pulled from JSON before it is
+# interpolated into a generated .tex file. Labels are Rust string literals
+# today (e.g. "hash_to_scalar") and TCB fields are operator-supplied TOML, so
+# an unescaped `_`, `&`, `%` or `#` is one label rename or one fleet file away
+# from a tectonic build that fails, or worse, one that silently drops text.
+#
+# Implemented with sed, not bash's `${var//pattern/replacement}`: a
+# replacement containing a literal `}` (needed for \}, \textbackslash{}, and
+# friends) makes bash miscount the braces that close the parameter expansion
+# itself and truncates the substitution — verified the hard way, by watching
+# every row in a generated table grow a stray trailing `}`. Backslash goes to
+# a placeholder token first so it is not re-escaped by the rules after it.
+latex_escape() {
+  printf '%s' "$1" | sed \
+    -e 's/\\/OCCULTATIONBACKSLASHTOKEN/g' \
+    -e 's/&/\\\&/g' \
+    -e 's/%/\\%/g' \
+    -e 's/\$/\\$/g' \
+    -e 's/#/\\#/g' \
+    -e 's/_/\\_/g' \
+    -e 's/{/\\{/g' \
+    -e 's/}/\\}/g' \
+    -e 's/~/\\textasciitilde{}/g' \
+    -e 's/\^/\\textasciicircum{}/g' \
+    -e 's/OCCULTATIONBACKSLASHTOKEN/\\textbackslash{}/g'
+}
+
+# Mirrors the three BudgetVerdict variants' Display impl in src/cost.rs.
+fmt_verdict() {
+  local kind="$1" ns="$2" ms
+  ms=$(fmt_ms "$ns")
+  case "$kind" in
+    misses)   printf 'MISSES by %s\\,ms' "$ms" ;;
+    marginal) printf 'MARGINAL --- %s\\,ms spare' "$ms" ;;
+    fits)     printf 'fits, %s\\,ms spare' "$ms" ;;
+    *) echo "regen-results.sh: unrecognized verdict kind '$kind' in composed.json" >&2; exit 1 ;;
+  esac
+}
+
+# Desk-study constants used in prose outside the Results section (the
+# abstract and the Problem statement set the scene with these before any
+# table appears). They are read from the same composed.json field the table
+# itself reads, formatted the same way (fmt_ms), so the abstract cannot
+# quietly drift from Table 3 by a rounding choice made in two places.
+write_desk_facts() {
+  local out=results/deterministic/desk-facts.tex
+  local budget_ns present_ns verify_ns total_ns over_ns cached_total_ns \
+    cached_headroom_ns pooled_present_ns cached_verify_ns pooled_total_ns pooled_headroom_ns
+
+  budget_ns=$(jq -r '.desk_study[0].composed.budget.nanos' results/measured/composed.json)
+  present_ns=$(jq -r '.desk_study[0].composed.present.nanos' results/measured/composed.json)
+  verify_ns=$(jq -r '.desk_study[0].composed.verify.nanos' results/measured/composed.json)
+  total_ns=$(jq -r '.desk_study[0].composed.total.nanos' results/measured/composed.json)
+  over_ns=$(jq -r '.desk_study[0].composed.verdict.over.nanos' results/measured/composed.json)
+  cached_total_ns=$(jq -r '.desk_study[1].composed.total.nanos' results/measured/composed.json)
+  cached_headroom_ns=$(jq -r '.desk_study[1].composed.verdict.headroom.nanos' results/measured/composed.json)
+  cached_verify_ns=$(jq -r '.desk_study[1].composed.verify.nanos' results/measured/composed.json)
+  pooled_present_ns=$(jq -r '.desk_study[2].composed.present.nanos' results/measured/composed.json)
+  pooled_total_ns=$(jq -r '.desk_study[2].composed.total.nanos' results/measured/composed.json)
+  pooled_headroom_ns=$(jq -r '.desk_study[2].composed.verdict.headroom.nanos' results/measured/composed.json)
+
+  cat > "$out" <<EOF
+% Generated by scripts/regen-results.sh from the desk_study rows of
+% results/measured/composed.json (the same field Table 3 reads). These are
+% the desk study's published constants, quoted in prose before Table 3
+% appears; formatted identically to it so the two cannot silently diverge.
+\newcommand{\deskbudget}{\SI{$(fmt_ms "$budget_ns")}{\milli\second}}
+\newcommand{\deskpresentnaive}{\SI{$(fmt_ms "$present_ns")}{\milli\second}}
+\newcommand{\deskverifynaive}{\SI{$(fmt_ms "$verify_ns")}{\milli\second}}
+\newcommand{\desktotalnaive}{\SI{$(fmt_ms "$total_ns")}{\milli\second}}
+\newcommand{\deskovernaive}{\SI{$(fmt_ms "$over_ns")}{\milli\second}}
+\newcommand{\desktotalcached}{\SI{$(fmt_ms "$cached_total_ns")}{\milli\second}}
+\newcommand{\deskheadroomcached}{\SI{$(awk -v n="$cached_headroom_ns" 'BEGIN{printf "%.0f", n/1000}')}{\micro\second}}
+\newcommand{\deskverifycached}{\SI{$(fmt_ms "$cached_verify_ns")}{\milli\second}}
+\newcommand{\deskpresentpooled}{\SI{$(fmt_ms "$pooled_present_ns")}{\milli\second}}
+\newcommand{\desktotalpooled}{\SI{$(fmt_ms "$pooled_total_ns")}{\milli\second}}
+\newcommand{\deskheadroompooled}{\SI{$(fmt_ms "$pooled_headroom_ns")}{\milli\second}}
+EOF
+}
+
+write_composed_table() {
+  local out=results/deterministic/composed-table.tex
+  local budget_ns naive_total naive_over cached_total cached_headroom pooled_total pooled_headroom
+
+  budget_ns=$(jq -r '.desk_study[0].composed.budget.nanos' results/measured/composed.json)
+  naive_total=$(jq -r '.desk_study[0].composed.total.nanos' results/measured/composed.json)
+  naive_over=$(jq -r '.desk_study[0].composed.verdict.over.nanos' results/measured/composed.json)
+  cached_total=$(jq -r '.desk_study[1].composed.total.nanos' results/measured/composed.json)
+  cached_headroom=$(jq -r '.desk_study[1].composed.verdict.headroom.nanos' results/measured/composed.json)
+  pooled_total=$(jq -r '.desk_study[2].composed.total.nanos' results/measured/composed.json)
+  pooled_headroom=$(jq -r '.desk_study[2].composed.verdict.headroom.nanos' results/measured/composed.json)
+
+  cat > "$out" <<'HEADER'
+% Generated by scripts/regen-results.sh from the desk_study rows of
+% results/measured/composed.json. Those rows are the desk study's published
+% figures, which are constants and do not vary by host, so this file lives
+% under deterministic/ and is diffed by CI. Do not hand-edit.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrrrl}
+\toprule
+Composition & Present & Verify & Total & Verdict \\
+\midrule
+HEADER
+
+  jq -r '.desk_study[] | [.label, .composed.present.nanos, .composed.verify.nanos,
+          .composed.total.nanos, .composed.verdict.verdict,
+          (.composed.verdict.over.nanos // .composed.verdict.headroom.nanos // 0)] | @tsv' \
+    results/measured/composed.json |
+  while IFS=$'\t' read -r label present verify total vkind vextra; do
+    p=$(fmt_ms "$present"); v=$(fmt_ms "$verify"); t=$(fmt_ms "$total")
+    verdict=$(fmt_verdict "$vkind" "$vextra")
+    printf '%s & %s\\,ms & %s\\,ms & %s\\,ms & %s \\\\\n' "$(latex_escape "$label")" "$p" "$v" "$t" "$verdict"
+  done >> "$out"
+
+  local caption
+  caption=$(printf 'The composed present-and-verify path against the %s\\,ms budget: the desk study'"'"'s published figures for presentation and verification, assessed together rather than separately as the desk study assessed them. The naive composition sums to %s\\,ms and misses the budget by %s\\,ms even though each half alone appeared to fit. Caching pairings brings the sum to %s\\,ms, %s\\,ms under the limit --- not headroom, hence \\texttt{MARGINAL} rather than a pass. Only the pre-computation pool, combined with cached pairings, fits with room to spare: %s\\,ms total, %s\\,ms of headroom. \\texttt{results/measured/composed.txt} reports the profile measured on this host, which diverges from these published figures by roughly an order of magnitude without changing the correction, which is an error in arithmetic, not in hardware.' \
+    "$(fmt_ms "$budget_ns")" "$(fmt_ms "$naive_total")" "$(fmt_ms "$naive_over")" \
+    "$(fmt_ms "$cached_total")" "$(fmt_ms "$cached_headroom")" \
+    "$(fmt_ms "$pooled_total")" "$(fmt_ms "$pooled_headroom")")
+
+  {
+    echo '\bottomrule'
+    echo '\end{tabular}'
+    printf '\\caption{%s}\n' "$caption"
+    echo '\label{tab:composed}'
+    echo '\end{table}'
+  } >> "$out"
+}
+
+# Anonymity summary figures used in the abstract and in prose outside
+# Table 5 itself, so the abstract's "120 hosts ... 71, 34, 11, 3 and 1"
+# cannot silently drift from the table it is summarizing.
+write_anonymity_facts() {
+  local out=results/deterministic/anonymity-facts.tex
+  local src=results/deterministic/anonymity-drifted.json
+  local fleet_size configs singletons eff ent sizes
+
+  read -r fleet_size configs singletons eff ent < <(
+    jq -r '[.fleet_size, (.partitions|length), .singletons, .effective_set, .entropy_bits] | @tsv' "$src"
+  )
+  sizes=$(jq -r '[.partitions[].size] | join(", ")' "$src")
+  eff=$(awk -v n="$eff" 'BEGIN{printf "%.2f", n}')
+  ent=$(awk -v n="$ent" 'BEGIN{printf "%.3f", n}')
+
+  cat > "$out" <<EOF
+% Generated by scripts/regen-results.sh from
+% results/deterministic/anonymity-drifted.json (the same file Table 5
+% reads). Summary figures quoted in prose outside the table.
+\newcommand{\anonfleetsize}{\num{$fleet_size}}
+\newcommand{\anonconfigs}{\num{$configs}}
+\newcommand{\anonsingletons}{\num{$singletons}}
+\newcommand{\anonsizes}{$sizes}
+\newcommand{\anoneffectiveset}{\num{$eff}}
+\newcommand{\anonentropy}{\num{$ent} bits}
+EOF
+}
+
+write_anonymity_table() {
+  local out=results/deterministic/anonymity-table.tex
+  local src=results/deterministic/anonymity-drifted.json
+  local fleet size_n configs min_s med_s max_s single eff ent
+
+  read -r fleet size_n configs min_s med_s max_s single eff ent < <(
+    jq -r '[.fleet, .fleet_size, (.partitions|length), .min_set, .median_set,
+             .max_set, .singletons, .effective_set, .entropy_bits] | @tsv' "$src"
+  )
+  eff=$(awk -v n="$eff" 'BEGIN{printf "%.2f", n}')
+  ent=$(awk -v n="$ent" 'BEGIN{printf "%.3f", n}')
+
+  cat > "$out" <<'HEADER'
+% Generated by scripts/regen-results.sh from
+% results/deterministic/anonymity-drifted.json, a partition of the fixed
+% fleet file examples/fleet-drifted.toml. Do not hand-edit.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{rlccc}
+\toprule
+Size & Host group & PCE SVN & Microcode & TDX module \\
+\midrule
+HEADER
+
+  jq -r '.partitions[] | [.size, (.host_groups | join(",")), .tcb.pce_svn,
+          .tcb.microcode, .tcb.tdx_module] | @tsv' "$src" |
+  while IFS=$'\t' read -r size groups pce microcode tdx; do
+    printf '%s & %s & %s & %s & %s \\\\\n' "$size" "$(latex_escape "$groups")" \
+      "$(latex_escape "$pce")" "$(latex_escape "$microcode")" "$(latex_escape "$tdx")"
+  done >> "$out"
+
+  local caption
+  caption=$(printf 'Anonymity sets for fleet \\texttt{%s}: %s hosts of identical hardware, after six weeks of ordinary operational drift in patch level, microcode and PCE SVN. %s distinct TCB configurations emerge; the largest anonymity set is %s of %s hosts, and %s host(s) are alone on their configuration --- no credential scheme can help them, because the quote collateral identifies the machine before any credential is even presented. Effective set size %s of %s; entropy %s bits.' \
+    "$(latex_escape "$fleet")" "$size_n" "$configs" "$max_s" "$size_n" "$single" "$eff" "$size_n" "$ent")
+
+  {
+    echo '\bottomrule'
+    echo '\end{tabular}'
+    printf '\\caption{%s}\n' "$caption"
+    echo '\label{tab:anonymity}'
+    echo '\end{table}'
+  } >> "$out"
+}
+
+write_primitives_table() {
+  local out=results/measured/primitives-table.tex
+  local src=results/measured/primitives.json
+
+  cat > "$out" <<'HEADER'
+% Generated by scripts/regen-results.sh from results/measured/primitives.json.
+% Wall-clock timing: differs per host, not diffed by CI. See
+% results/measured/HEADER.txt for the host and toolchain that produced this
+% file. Do not hand-edit.
+\begin{table}[h]
+\centering\small
+\begin{tabular}{lrrrl}
+\toprule
+Operation & Cost & P95 & $\times$Ed25519 & Provenance \\
+\midrule
+HEADER
+
+  jq -r '.rows[] | [.label, .cost_us, (.p95_us // -1), (.ratio_to_ed25519 // -1),
+          .provenance.kind, .source.kind, (.source.iters // 0), (.source.citation // "")] | @tsv' \
+    "$src" |
+  while IFS=$'\t' read -r label cost_us p95_us ratio prov_kind src_kind iters citation; do
+    if [ "$prov_kind" = "modelled" ]; then
+      echo "regen-results.sh: primitives.json contains a modelled row ('$label')," \
+           "which write_primitives_table does not yet render; extend it before regenerating" >&2
+      exit 1
+    fi
+    cost_ms=$(awk -v n="$cost_us" 'BEGIN{printf "%.3f", n / 1000}')
+    if awk -v n="$p95_us" 'BEGIN{exit !(n < 0)}'; then
+      p95_str="--"
+    else
+      p95_str=$(awk -v n="$p95_us" 'BEGIN{printf "%.3f\\,ms", n / 1000}')
+    fi
+    if awk -v n="$ratio" 'BEGIN{exit !(n < 0)}'; then
+      ratio_str="--"
+    else
+      ratio_str=$(awk -v n="$ratio" 'BEGIN{printf "%.1f", n}')
+    fi
+    case "$src_kind" in
+      measured_here) prov_str=$(printf 'measured here (n=%s)' "$iters") ;;
+      published)     prov_str=$(printf 'PUBLISHED --- %s' "$(latex_escape "$citation")") ;;
+      *) echo "regen-results.sh: unrecognized source kind '$src_kind'" >&2; exit 1 ;;
+    esac
+    printf '%s & %s\\,ms & %s & %s & %s \\\\\n' "$(latex_escape "$label")" "$cost_ms" "$p95_str" "$ratio_str" "$prov_str"
+  done >> "$out"
+
+  {
+    echo '\bottomrule'
+    echo '\end{tabular}'
+    echo '\caption{Primitive costs measured on this host against an Ed25519 sign-and-verify round trip. ECDAA and threshold escrow are omitted: they are modelled stubs and this table is generated from a plain \texttt{occultation bench} run, which never executes a modelled component. See \texttt{results/measured/HEADER.txt} for the exact host and toolchain.}'
+    echo '\label{tab:primitives}'
+    echo '\end{table}'
+  } >> "$out"
+}
+
+write_pool_facts() {
+  local out=results/deterministic/pool-facts.tex
+  local src=results/deterministic/pool-burst-5000.json
+  local requests served stalled amp window_us overload growth onset distinct reuse refill_hz burst_hz \
+    refill_cost_us online_cost_us
+
+  read -r requests served stalled amp window_us overload growth onset distinct reuse refill_hz burst_hz \
+    refill_cost_us online_cost_us < <(
+    jq -r '[.requests, .served_immediately, .stalled, .amplification, .duration_us,
+             .overload_factor, .growth_per_request, .onset_request,
+             .distinct_blinding_factors, .reuse_events, .refill_rate_hz, .burst_rate_hz,
+             .refill_cost_us, .online_cost_us] | @tsv' "$src"
+  )
+  local amp_i window_s overload_2 growth_2 refill_i burst_i refill_cost_i online_cost_i
+  amp_i=$(awk -v n="$amp" 'BEGIN{printf "%.0f", n}')
+  window_s=$(awk -v n="$window_us" 'BEGIN{printf "%.1f", n / 1000000}')
+  overload_2=$(awk -v n="$overload" 'BEGIN{printf "%.2f", n}')
+  growth_2=$(awk -v n="$growth" 'BEGIN{printf "%.2f", n}')
+  refill_i=$(awk -v n="$refill_hz" 'BEGIN{printf "%.0f", n}')
+  burst_i=$(awk -v n="$burst_hz" 'BEGIN{printf "%.0f", n}')
+  refill_cost_i=$(awk -v n="$refill_cost_us" 'BEGIN{printf "%.0f", n}')
+  online_cost_i=$(awk -v n="$online_cost_us" 'BEGIN{printf "%.0f", n}')
+
+  cat > "$out" <<EOF
+% Generated by scripts/regen-results.sh from
+% results/deterministic/pool-burst-5000.json, the same burst
+% tests/acceptance.rs's acceptance test 2 exercises. A seeded simulation,
+% hence deterministic; do not hand-edit.
+\newcommand{\poolrequests}{\num{$requests}}
+\newcommand{\poolserved}{\num{$served}}
+\newcommand{\poolstalled}{\num{$stalled}}
+\newcommand{\poolamplification}{\num{$amp_i}}
+\newcommand{\poolwindow}{\SI{$window_s}{\second}}
+\newcommand{\pooloverloadfactor}{\num{$overload_2}}
+\newcommand{\poolgrowthperrequest}{\num{$growth_2}}
+\newcommand{\poolonsetrequest}{\num{$onset}}
+\newcommand{\pooldistinctblinding}{\num{$distinct}}
+\newcommand{\poolrefillrate}{\num{$refill_i}}
+\newcommand{\poolburstrate}{\num{$burst_i}}
+\newcommand{\poolrefillratesi}{\SI{$refill_i}{\per\second}}
+\newcommand{\poolburstratesi}{\SI{$burst_i}{\per\second}}
+\newcommand{\poolrefillcostsi}{\SI{$refill_cost_i}{\micro\second}}
+\newcommand{\poolonlinecostsi}{\SI{$online_cost_i}{\micro\second}}
+\newcommand{\poolreuseevents}{\num{$reuse}}
+EOF
+}
+
+write_composed_facts() {
+  local out=results/measured/composed-facts.tex
+  local src=results/measured/composed.json
+  local desk_total measured_total dv_naive dv_cached mv_naive mv_cached ratio_baseline
+
+  read -r desk_total measured_total dv_naive dv_cached mv_naive mv_cached ratio_baseline < <(
+    jq -r '[.desk_study[0].composed.total.nanos, .measured[0].composed.total.nanos,
+             .desk_study[0].composed.verify.nanos, .desk_study[1].composed.verify.nanos,
+             .measured[0].composed.verify.nanos, .measured[1].composed.verify.nanos,
+             .measured_ratio_to_baseline] | @tsv' "$src"
+  )
+  local factor direction desk_pct measured_pct ratio_i
+  factor=$(awk -v d="$desk_total" -v m="$measured_total" \
+    'BEGIN{a=d/m; b=m/d; printf "%.0f", (a>b?a:b)}')
+  direction=$(awk -v d="$desk_total" -v m="$measured_total" \
+    'BEGIN{print (m<d)?"cheaper":"dearer"}')
+  desk_pct=$(awk -v n="$dv_naive" -v c="$dv_cached" 'BEGIN{printf "%.0f", (1-c/n)*100}')
+  measured_pct=$(awk -v n="$mv_naive" -v c="$mv_cached" 'BEGIN{printf "%.0f", (1-c/n)*100}')
+  ratio_i=$(awk -v n="$ratio_baseline" 'BEGIN{printf "%.0f", n}')
+
+  cat > "$out" <<EOF
+% Generated by scripts/regen-results.sh from results/measured/composed.json.
+% Wall-clock timing: differs per host, not diffed by CI. See
+% results/measured/HEADER.txt for the host and toolchain. Do not hand-edit.
+\newcommand{\measureddivergencefactor}{\num{$factor}}
+\newcommand{\measureddivergencedirection}{$direction}
+\newcommand{\deskcachedsavingpct}{\SI{$desk_pct}{\percent}}
+\newcommand{\measuredcachedsavingpct}{\SI{$measured_pct}{\percent}}
+\newcommand{\measuredratiotobaseline}{\num{$ratio_i}}
+EOF
+}
+
+write_desk_facts
+write_composed_table
+write_anonymity_facts
+write_anonymity_table
+write_primitives_table
+write_pool_facts
+write_composed_facts
 
 echo "wrote results/"

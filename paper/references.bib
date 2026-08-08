@@ -1,0 +1,155 @@
+% References for "What Unlinkability Costs at Agent Action Rates".
+%
+% Entries marked with a `note = {[verify]}` field carry bibliographic detail
+% (exact venue, page range, or precise attribution) that was not checked
+% against the primary source before this draft circulated; see
+% paper/README.md's pre-submission checklist. This mirrors the convention
+% used by ../../ov-poc-standard/paper/references.bib.
+
+@misc{povocopenissues,
+  title        = {Open Issues, Appendix D --- Proof-of-Control Standard},
+  author       = {{Task Force for AI Agents in Healthcare}},
+  howpublished = {\url{https://github.com/Task-force-for-AI-agents-in-Healthcare/ov-poc-standard/blob/master/0.1/en/0x93-Appendix-D_Open-Issues.md}},
+  year         = {2026},
+  note         = {Open issue 2, on verifiable unlinkability}
+}
+
+@misc{occultationtool,
+  title        = {occultation: measuring what verifiable unlinkability costs at agent action rates},
+  author       = {{Task Force for AI Agents in Healthcare}},
+  howpublished = {\url{https://github.com/Task-force-for-AI-agents-in-Healthcare/occultation}},
+  year         = {2026},
+  note         = {Apache-2.0}
+}
+
+@inproceedings{daa,
+  title     = {Direct Anonymous Attestation},
+  author    = {Brickell, Ernie and Camenisch, Jan and Chen, Liqun},
+  booktitle = {Proceedings of the 11th ACM Conference on Computer and Communications Security (CCS)},
+  year      = {2004},
+  pages     = {132--145}
+}
+
+@misc{iso20008,
+  title        = {ISO/IEC 20008-2:2013 --- Information technology --- Security techniques --- Anonymous digital signatures --- Part 2: Mechanisms using a group public key},
+  author       = {{International Organization for Standardization}},
+  year         = {2013}
+}
+
+@inproceedings{cl2001,
+  title     = {Efficient Non-Transferable Anonymous Multi-Show Credentials with Optional Anonymity Revocation},
+  author    = {Camenisch, Jan and Lysyanskaya, Anna},
+  booktitle = {Advances in Cryptology --- EUROCRYPT 2001},
+  year      = {2001},
+  pages     = {93--118}
+}
+
+@inproceedings{idemix,
+  title     = {Design and Implementation of the Idemix Anonymous Credential System},
+  author    = {Camenisch, Jan and Van Herreweghen, Els},
+  booktitle = {Proceedings of the 9th ACM Conference on Computer and Communications Security (CCS)},
+  year      = {2002},
+  note      = {[verify] exact page range against the primary proceedings}
+}
+
+@techreport{uprove,
+  title        = {U-Prove Cryptographic Specification V1.1 (Revision 3)},
+  author       = {Paquin, Christian and Zaverucha, Greg},
+  institution  = {Microsoft Corporation},
+  year         = {2013},
+  note         = {[verify] revision number against the current published specification}
+}
+
+@inproceedings{bbsplus,
+  title     = {Short Group Signatures},
+  author    = {Boneh, Dan and Boyen, Xavier and Shacham, Hovav},
+  booktitle = {Advances in Cryptology --- CRYPTO 2004},
+  year      = {2004},
+  pages     = {41--55},
+  note      = {The BBS signature this paper's ``BBS+'' variant, as specified in \cite{bbsdraft}, extends; the ``+'' extension is commonly attributed to Au, Susilo and Mu (2006) [verify exact citation]}
+}
+
+@misc{bls12381,
+  title        = {Pairing-Friendly Curves},
+  author       = {Sakemi, Yumi and Kobayashi, Tetsutaro and Saito, Tsunekazu and Wahby, Riad S.},
+  howpublished = {IRTF Internet-Draft, draft-irtf-cfrg-pairing-friendly-curves},
+  year         = {2022},
+  note         = {Defines the BLS12-381 curve used by this paper's implementation, via the \texttt{blstrs} crate}
+}
+
+@misc{bbsdraft,
+  title        = {The BBS Signature Scheme},
+  author       = {Looker, Tobias and Bowe, Sean and Hoyt, Vasilis and Sporny, Manu and Bachhuber, Sam},
+  howpublished = {IRTF Internet-Draft, draft-irtf-cfrg-bbs-signatures},
+  year         = {2026},
+  note         = {[verify] author list and draft revision against the current IETF datatracker entry}
+}
+
+@article{spseq,
+  title   = {Structure-Preserving Signatures on Equivalence Classes and Constant-Size Anonymous Credentials},
+  author  = {Fuchsbauer, Georg and Hanser, Christian and Slamanig, Daniel},
+  journal = {Journal of Cryptology},
+  year    = {2019},
+  note    = {[verify] the specific ``SPSEQ-UC'' updatable-commitment variant P05 names against its primary source}
+}
+
+@inproceedings{chaumvanheyst,
+  title     = {Group Signatures},
+  author    = {Chaum, David and van Heyst, Eug{\`e}ne},
+  booktitle = {Advances in Cryptology --- EUROCRYPT '91},
+  year      = {1991},
+  pages     = {257--265}
+}
+
+@inproceedings{ringsig,
+  title     = {How to Leak a Secret},
+  author    = {Rivest, Ronald L. and Shamir, Adi and Tauman, Yael},
+  booktitle = {Advances in Cryptology --- ASIACRYPT 2001},
+  year      = {2001},
+  pages     = {552--565}
+}
+
+@misc{privacypass,
+  title        = {The Privacy Pass Protocol},
+  author       = {Davidson, Alex and Iyengar, Jana and Wood, Christopher A.},
+  howpublished = {RFC 9578},
+  year         = {2024}
+}
+
+@misc{voprf,
+  title        = {Oblivious Pseudorandom Functions (OPRFs) Using Prime-Order Groups},
+  author       = {Davidson, Alex and Faz-Hernandez, Armando and Sullivan, Nick and Wood, Christopher A.},
+  howpublished = {RFC 9497},
+  year         = {2023}
+}
+
+@inproceedings{chaumpedersen,
+  title     = {Wallet Databases with Observers},
+  author    = {Chaum, David and Pedersen, Torben P.},
+  booktitle = {Advances in Cryptology --- CRYPTO '92},
+  year      = {1992},
+  pages     = {89--105}
+}
+
+@techreport{keysunderdoormats,
+  title       = {Keys Under Doormats: Mandating Insecurity by Requiring Government Access to All Data and Communications},
+  author      = {Abelson, Harold and Anderson, Ross and Bellovin, Steven M. and Benaloh, Josh and Blaze, Matt and Diffie, Whitfield and Gilmore, John and Green, Matthew and Landau, Susan and Neumann, Peter G. and Rivest, Ronald L. and Schiller, Jeffrey I. and Schneier, Bruce and Specter, Michael A. and Weitzner, Daniel J.},
+  institution = {MIT CSAIL Technical Report},
+  number      = {MIT-CSAIL-TR-2015-026},
+  year        = {2015}
+}
+
+@article{clipperchip,
+  title   = {Protocol Failure in the Escrowed Encryption Standard},
+  author  = {Blaze, Matt},
+  journal = {Proceedings of the 2nd ACM Conference on Computer and Communications Security (CCS)},
+  year    = {1994},
+  pages   = {59--67}
+}
+
+@misc{ohttp,
+  title        = {Oblivious HTTP},
+  author       = {Thomson, Martin and Wood, Christopher A.},
+  howpublished = {RFC 9458},
+  year         = {2023}
+}

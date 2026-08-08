@@ -26,3 +26,10 @@ jobs:
           jq -e '.budget_us == 15000'       results/measured/composed.json
           grep -q "tool_version: occultation $(cargo pkgid | sed 's/.*[#@]//')" \
             results/measured/HEADER.txt
+
+  paper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: WtfJoke/setup-tectonic@v3
+      - run: cd paper && tectonic -Z shell-escape main.tex
