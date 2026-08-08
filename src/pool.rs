@@ -26,12 +26,27 @@ pub enum PoolError {
 /// One pre-computed presentation's worth of blinding.
 ///
 /// **Not `Clone` and not `Copy`, deliberately.** `consume` takes `self` by
-/// value, lends the scalars for exactly one call and drops them. There is no
-/// way through this API to present twice from one item, which is the point:
-/// blinding reuse silently voids the unlinkability property the whole of P05
-/// is about, and it also hands an observer of two transcripts the signature
-/// scalar and every undisclosed attribute. See the test
-/// `reusing_one_set_of_scalars_leaks_the_signature_and_every_hidden_attribute`.
+/// value, lends the scalars for exactly one call and drops them.
+///
+/// **What that does and does not buy, stated precisely**, because this is the
+/// claim a reader of P05 will rely on:
+///
+/// * Accidental reuse is impossible. No pooled item can be presented twice by
+///   holding it, copying it, or re-acquiring it: the fields are private, the
+///   type has no `Clone`, and `acquire` never returns an item to the queue.
+/// * Deliberate reuse is **not** prevented. `consume` places no bound on its
+///   return type and `ProofScalars` is `Clone` with public fields, so
+///   `item.consume(|s| s.clone())` yields an owned copy that outlives the
+///   item, and `prove_with_scalars` is public. What the design buys is that
+///   any such reuse is a single conspicuous, greppable `.clone()` at the call
+///   site rather than an emergent property of pool exhaustion — which is the
+///   failure mode P05 actually asks about.
+///
+/// Reuse silently voids the unlinkability property the whole of P05 is about,
+/// and it also hands an observer of two transcripts the signature scalar and
+/// every undisclosed attribute. See
+/// `reusing_one_set_of_scalars_leaks_the_signature_and_every_hidden_attribute`,
+/// which performs the extraction.
 pub struct PoolItem {
     scalars: ProofScalars,
     serial: u64,
@@ -71,10 +86,15 @@ impl PoolItem {
 
     /// Build an item from known scalars, so the fingerprint derivation can be
     /// mutation-tested. Test-only: outside tests, the pool is the only source
-    /// of items, which is what makes reuse unrepresentable.
+    /// of items.
     #[cfg(test)]
     pub(crate) fn for_test(scalars: ProofScalars) -> Self {
-        PoolItem { scalars, serial: 0 }
+        PoolItem::for_test_with_serial(scalars, 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test_with_serial(scalars: ProofScalars, serial: u64) -> Self {
+        PoolItem { scalars, serial }
     }
 }
 
@@ -211,12 +231,39 @@ pub struct BurstReport {
     /// median stall is about half the maximum and the ratio saturates near
     /// 2.0 however bad the backlog gets. A metric that reports 2.0 whether
     /// the worst response is 2 ms or 6 s does not measure a side channel.
+    ///
+    /// **It grows linearly with `duration`.** The queue is unstable under
+    /// sustained overload, so there is no steady state: this is the peak over
+    /// the observation window, not a property of the pool. On the shipped
+    /// burst, 1 s gives ~59,000x and 8 s gives ~479,000x. Quote it with its
+    /// duration, and quote `growth_per_request` beside it as the invariant.
     pub amplification: f64,
     pub distinct_blinding_factors: usize,
     /// Always zero. Present so the report says so out loud, and computed from
     /// the issued fingerprints rather than asserted, so it would catch a pool
     /// that started handing items out twice.
     pub reuse_events: usize,
+    /// How many times `acquire` returned `None` — the real pool's exhaustion
+    /// count, not the fluid model's. Reported so the stall claim is made
+    /// against a pool that genuinely ran dry.
+    pub pool_exhaustions: u64,
+    /// Requests per second by which arrivals outrun refill, as a ratio.
+    /// Duration-invariant: it says whether a channel exists at all.
+    pub overload_factor: f64,
+    /// How many idle-responses of extra delay each successive request pays
+    /// relative to the one before it, once the pool is dry:
+    /// `(1/refill_rate - 1/burst_rate) / online_cost`.
+    ///
+    /// This is the duration-invariant companion to `amplification`, and it is
+    /// the figure to quote as a system property. `amplification` is the peak
+    /// observed over `duration` and grows linearly with it — 2 s of this burst
+    /// gives ~119,000x and 8 s gives ~479,000x — so it characterises the
+    /// observation window as much as the pool.
+    pub growth_per_request: f64,
+    /// The request index at which the buffer ran dry, if it did. How briefly
+    /// an adversary must sustain a burst before the channel opens — and the
+    /// figure `capacity` actually moves.
+    pub onset_request: Option<usize>,
 }
 
 /// Run a burst against a pool.
@@ -226,10 +273,6 @@ pub struct BurstReport {
 /// is not approximated: every served request takes a real `PoolItem` with real
 /// scalars, so the uniqueness audit measures the actual pool rather than the
 /// model of it.
-///
-/// The stall does not plateau: while arrivals outrun refill, the delay tracks
-/// the burst's duration rather than settling at a fixed penalty, which is
-/// what makes it readable as a side channel rather than merely expensive.
 pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     if !cfg.burst_rate_hz.is_finite() || cfg.burst_rate_hz <= 0.0 {
         return Err(PoolError::BadBurstRate(cfg.burst_rate_hz));
@@ -264,6 +307,7 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
     let mut fingerprints: HashSet<[u8; 32]> = HashSet::with_capacity(requests);
     let mut served_immediately = 0usize;
     let mut stalled = 0usize;
+    let mut onset_request: Option<usize> = None;
 
     for k in 0..requests {
         let t = k as f64 * interval;
@@ -280,12 +324,30 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
             level = 0.0;
             last_t = t + wait;
             stalled += 1;
+            onset_request.get_or_insert(k);
             wait
         };
 
-        // Real item, real scalars, real fingerprint.
-        pool.fill();
-        let item = pool.acquire().expect("just filled");
+        // Drive the real pool from the model rather than topping it up before
+        // every acquire. Refilling to capacity each iteration would mean
+        // `acquire` never returned `None`, `exhaustions()` were provably zero,
+        // and the "stall, never reuse" assertion would be made against a pool
+        // that never stalled — asserting only that ChaCha20 does not repeat.
+        let due = (level.max(0.0).floor() as usize).saturating_sub(pool.len());
+        for _ in 0..due {
+            pool.refill_one();
+        }
+        let item = match pool.acquire() {
+            Some(item) => item,
+            None => {
+                // The model says this request waited for the worker to finish
+                // an item; produce that item and take it. `acquire` returning
+                // `None` here is the exhaustion path, and it is the only way
+                // a caller ever learns the pool is empty.
+                pool.refill_one();
+                pool.acquire().expect("the worker just produced one")
+            }
+        };
         fingerprints.insert(item.fingerprint());
 
         let stall = Duration::from_secs_f64(stall_secs);
@@ -317,13 +379,24 @@ pub fn simulate_burst(cfg: &BurstConfig) -> Result<BurstReport, PoolError> {
         latency_p95: pick(0.95),
         latency_p99: pick(0.99),
         latency_max,
-        amplification: if cfg.online_cost.is_zero() {
-            1.0
-        } else {
-            latency_max.as_secs_f64() / cfg.online_cost.as_secs_f64()
+        // A zero idle cost means any stall at all is infinitely amplified.
+        // Reporting 1.0 — "no side channel" — for a run with six-second
+        // stalls would invert the metric's meaning.
+        amplification: match (cfg.online_cost.is_zero(), latency_max.is_zero()) {
+            (_, true) => 1.0,
+            (true, false) => f64::INFINITY,
+            (false, false) => latency_max.as_secs_f64() / cfg.online_cost.as_secs_f64(),
         },
         distinct_blinding_factors: fingerprints.len(),
         reuse_events: requests - fingerprints.len(),
+        pool_exhaustions: pool.exhaustions(),
+        overload_factor: cfg.burst_rate_hz / refill_rate,
+        growth_per_request: if cfg.online_cost.is_zero() {
+            f64::INFINITY
+        } else {
+            ((1.0 / refill_rate) - interval).max(0.0) / cfg.online_cost.as_secs_f64()
+        },
+        onset_request,
     })
 }
 
@@ -486,6 +559,25 @@ mod tests {
         }
     }
 
+    /// The other direction of the identity constraint, and it is not
+    /// decorative: adding `parts.push(self.serial.to_be_bytes().to_vec())` to
+    /// the fingerprint is a one-line change that leaves every other test in
+    /// this module green — and it would make every fingerprint unique by
+    /// construction, so `reuse_events` would be permanently 0 and the audit
+    /// would be silently dead.
+    #[test]
+    fn the_serial_is_excluded_from_the_fingerprint() {
+        let s = ProofScalars::random(&mut ChaCha20Rng::seed_from_u64(3), 2);
+        let a = PoolItem::for_test_with_serial(s.clone(), 0);
+        let b = PoolItem::for_test_with_serial(s, 9_999);
+        assert_ne!(a.serial(), b.serial());
+        assert_eq!(
+            a.fingerprint(),
+            b.fingerprint(),
+            "the serial must not enter the fingerprint, or the reuse audit is dead"
+        );
+    }
+
     #[test]
     fn refilling_a_full_pool_produces_nothing() {
         let mut p = PrecomputationPool::new(3, 1, 7);
@@ -561,8 +653,14 @@ mod tests {
         );
         assert_eq!(r.stalled, 0);
         assert_eq!(r.stall_max, Duration::ZERO);
-        assert_eq!(r.served_immediately, r.requests);
         assert_eq!(r.stall_total, Duration::ZERO);
+        assert_eq!(r.served_immediately, r.requests);
+        assert_eq!(r.pool_exhaustions, 0, "a pool that never ran dry");
+        assert!(r.onset_request.is_none());
+        assert!(
+            r.overload_factor < 1.0,
+            "arrivals must be below refill here"
+        );
         // No stall means no side channel: every response costs the same.
         assert!(
             (r.amplification - 1.0).abs() < 1e-9,
@@ -590,14 +688,51 @@ mod tests {
             r.distinct_blinding_factors, r.requests,
             "every request got a fresh item"
         );
-        assert_eq!(
-            r.served_immediately + r.stalled,
-            r.requests,
-            "every request is accounted for exactly once"
+        // Against a pool that genuinely ran dry, not one topped up before
+        // every acquire: `acquire` returned None, and that is the only way a
+        // caller learns the pool is empty.
+        assert!(
+            r.pool_exhaustions > 0,
+            "the real pool never exhausted, so this proves nothing"
         );
+        assert_eq!(r.served_immediately + r.stalled, r.requests);
         assert!(r.stall_total > Duration::ZERO);
-        assert_eq!(r.refill_rate_hz, 1.0 / cfg.refill_cost.as_secs_f64());
-        assert_eq!(r.burst_rate_hz, cfg.burst_rate_hz);
+    }
+
+    #[test]
+    fn the_duration_invariant_metrics_do_not_move_with_the_window() {
+        // amplification is a peak over the observation window and scales with
+        // it; growth_per_request, overload_factor and onset are properties of
+        // the pool and must not.
+        let base = BurstConfig {
+            capacity: 32,
+            refill_cost: Duration::from_micros(1_000),
+            online_cost: Duration::from_micros(50),
+            burst_rate_hz: 4_000.0,
+            duration: Duration::from_secs(1),
+            seed: 7,
+        };
+        let short = simulate_burst(&base).unwrap();
+        let long = simulate_burst(&BurstConfig {
+            duration: Duration::from_secs(4),
+            ..base.clone()
+        })
+        .unwrap();
+
+        assert!((short.growth_per_request - long.growth_per_request).abs() < 1e-9);
+        assert!((short.overload_factor - long.overload_factor).abs() < 1e-9);
+        assert_eq!(short.onset_request, long.onset_request);
+
+        // (1/1000 - 1/4000) / 50e-6 = 0.00075 / 0.00005 = 15
+        assert!(
+            (short.growth_per_request - 15.0).abs() < 1e-6,
+            "{}",
+            short.growth_per_request
+        );
+        assert!((short.overload_factor - 4.0).abs() < 1e-9);
+
+        // And the peak does move, roughly in proportion to the window.
+        assert!(long.amplification > short.amplification * 3.0);
     }
 
     #[test]
