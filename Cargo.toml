@@ -44,6 +44,7 @@ dcap-qvl = "0.6"
 prometheus-client = "0.23"
 http-serde = "2"
 humantime-serde = "1"
+base64 = "0.22"
 
 [dev-dependencies]
 criterion = "0.8"
