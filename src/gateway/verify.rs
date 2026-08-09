@@ -31,23 +31,30 @@
 //! the committed sample quote by anyone who needs it, but writing it down
 //! is the exact habit this module exists to refuse.)
 //!
-//! Four guards, because no one of them is sufficient:
+//! Five guards, because no one of them is sufficient:
 //!
-//! 1. Three greps over `src/`, `tests/`, `benches/` and `examples/` — the
-//!    field access, the name of the struct that carries it (which a stored
-//!    field, a return type or a destructuring pattern all have to write),
-//!    and the TCB-override entry point. Task 8 duplicates these, and they
-//!    are the only checks that survive someone marking a behavioural test
-//!    `#[ignore]`.
-//! 2. A lexical ban on `:?`, `log::`, `println!`, `eprintln!` and `dbg!` in
+//! 1. Greps over `src/`, `tests/`, `benches/` and `examples/` — the field
+//!    access, the name of the struct that carries it (which a stored field, a
+//!    return type or a destructuring pattern all have to write), and the
+//!    TCB-override entry points, matched by their shared `dangerous_` prefix
+//!    rather than by one spelling, since upstream has four of them. Task 8's
+//!    CI job duplicates all of these, and they are the only checks that
+//!    survive someone marking a behavioural test `#[ignore]`.
+//! 2. A lexical ban on `?}`, `log::`, `println!`, `eprintln!` and `dbg!` in
 //!    this module's non-test code. A grep for the identifier cannot see
 //!    `log::info!("{verified:?}")`, which names nothing forbidden and never
-//!    touches the verdict, but still writes the serial to disk.
-//! 3. `a_real_verified_report_leaks_none_of_its_hardware_identifier`, which
+//!    touches the verdict, but still writes the serial to disk. `?}` rather
+//!    than `:?`: `{verified:#?}` and `{verified:x?}` contain no `:?` at all.
+//! 3. A **containment** grep, which is what makes guard 2 worth anything.
+//!    That ban is scoped to this file by `include_str!`, so it cannot see
+//!    another file calling the upstream verifier and formatting the result.
+//!    `the_upstream_verifier_is_called_from_this_file_and_no_other` requires
+//!    every route to a report to live here — the one file the ban covers.
+//! 4. `a_real_verified_report_leaks_none_of_its_hardware_identifier`, which
 //!    runs a genuine verification and asserts the real serial appears in
 //!    neither the JSON nor the `Debug` rendering of the verdict, in any of
 //!    four byte shapes and independent of whitespace.
-//! 4. The escape set being a parameter list: `verified_verdict` takes the
+//! 5. The escape set being a parameter list: `verified_verdict` takes the
 //!    three permitted fields, so the report itself is never in scope where
 //!    a verdict is built.
 
@@ -270,16 +277,15 @@ impl QuoteVerifier {
     /// produces a [`QuoteVerdict`]. There is no error path out of this
     /// function and nothing in it may panic.
     ///
-    /// `dcap-qvl` also exposes a TCB-override entry point, whose name begins
-    /// `dangerous_verify_with_` and which is well named: it lets a caller
-    /// rewrite the TCB info after signature checking, which would make this
-    /// gateway report `Verified` for a platform Intel has revoked. It is
-    /// never called here, and
+    /// `dcap-qvl` also exposes TCB-override entry points, all carrying a
+    /// `dangerous_` prefix and all well named: they let a caller rewrite the
+    /// TCB info after signature checking, which would make this gateway
+    /// report `Verified` for a platform Intel has revoked. None is ever
+    /// called here, and
     /// `the_dangerous_override_is_never_called_anywhere_in_this_crate`
-    /// asserts the full spelling appears nowhere in `src/`, `tests/`,
-    /// `benches/` or `examples/`. (That is also
-    /// why this comment does not write the name out in full — the test would
-    /// find its own documentation.)
+    /// asserts so across `src/`, `tests/`, `benches/` and `examples/`.
+    /// (That is also why this comment does not write any of the names out —
+    /// the test would find its own documentation.)
     pub fn verify(&self, raw: &RawAttestation) -> QuoteVerdict {
         self.verify_at(raw, now_secs_from(SystemTime::now()))
     }
@@ -499,6 +505,97 @@ mod tests {
             assert!(
                 !matches!(verdict, QuoteVerdict::Verified { .. }),
                 "a {len}-byte truncation verified"
+            );
+        }
+    }
+
+    /// The hostile case that reaches all the way into the chain check.
+    ///
+    /// Every other refusal in this module stops earlier than it looks:
+    /// `bytes_that_are_not_a_quote_are_invalid_not_a_panic` and the
+    /// truncation sweep both die in `Quote::parse`, and the cache-state tests
+    /// die at the lookup — none of them ever calls the upstream verifier, so
+    /// none of them says anything about what happens to a *well-formed* quote
+    /// whose signature does not hold. Nothing in `tests/` can reach that
+    /// depth either: warming the cache from outside the crate needs a live
+    /// provisioning service, so `tests/gateway_hostile.rs` bottoms out at
+    /// `Unverified` by construction. This is the one place the whole chain
+    /// runs against hostile bytes.
+    ///
+    /// The clock is pinned inside the vendored collateral's validity window,
+    /// which is what separates "the signature is forged" from "the bundle
+    /// expired" — with a real clock both come back `Invalid` and this test
+    /// would pass against a quote that was never tampered with at all. The
+    /// unmodified control below is what proves the window is right.
+    #[test]
+    fn a_tampered_quote_fails_the_chain_inside_the_collateral_window() {
+        let verifier = verifier_with_fresh_collateral();
+        let pristine = real_tdx_quote();
+
+        // The control: unmodified, same clock, must genuinely verify. Without
+        // it, every assertion below would hold for a clock outside the
+        // window, where nothing verifies and tampering proves nothing.
+        let control = verifier.verify_at(
+            &RawAttestation {
+                bytes: pristine.clone(),
+            },
+            Some(NOW_INSIDE_COLLATERAL_WINDOW),
+        );
+        assert!(
+            matches!(control, QuoteVerdict::Verified { .. }),
+            "the unmodified fixture must verify here, or the tampering below \
+             is not what is being detected: {control:?}"
+        );
+
+        // Five tampering sites, one per signed structure the chain covers.
+        // A single site leaves the other four checks unexercised, and they
+        // fail for genuinely different reasons — flipping a byte of the PCK
+        // chain never reaches a signature check at all, it fails to parse.
+        //
+        // The offsets are the DCAP v4 quote layout: header 0..48, TD report
+        // body 48..632, ECDSA signature 632..696, attestation key 696..760,
+        // QE report 760..1144, QE report signature 1144..1208, then the
+        // certification data.
+        //
+        // What is *not* here is the tail, and the reason is worth recording
+        // rather than discovering twice. This fixture's last 71 bytes
+        // (4935..5006) are zero padding after the PEM chain, outside every
+        // signed structure — flipping a byte there leaves the quote
+        // verifying, correctly. The first draft of this test used `n - 8` as
+        // "the signature at the tail" on that assumption and asserted a
+        // rejection that never came; the control above is what caught it.
+        // Anyone adding a site here should confirm the pristine quote
+        // verifies and the tampered one does not, rather than assuming an
+        // offset is covered because it is late in the buffer.
+        let sites: [(&str, usize); 5] = [
+            ("the quote header", 8),
+            ("the TD report body", 200),
+            ("the ECDSA signature over the report", 640),
+            ("the QE report", 800),
+            ("the PCK certificate chain", 2500),
+        ];
+        for (what, at) in sites {
+            let mut tampered = pristine.clone();
+            tampered[at] ^= 0xff;
+            assert_ne!(tampered, pristine, "the tampering at {what} was a no-op");
+            let verdict = verifier.verify_at(
+                &RawAttestation { bytes: tampered },
+                Some(NOW_INSIDE_COLLATERAL_WINDOW),
+            );
+            assert!(
+                !matches!(verdict, QuoteVerdict::Verified { .. }),
+                "a quote tampered in {what} verified"
+            );
+            // ...and it is the *agent's* fault, not ours. Reporting a forged
+            // signature as `Unverified` would file it in the counter an
+            // operator alerts on for their own collateral pipeline, and would
+            // schedule a PCCS refresh for it (see `pipeline.rs`) — an
+            // agent-triggered request amplifier pointed at the provisioning
+            // service.
+            assert!(
+                matches!(verdict, QuoteVerdict::Invalid { .. }),
+                "a quote tampered in {what} must be Invalid, not our failure: \
+                 {verdict:?}"
             );
         }
     }
@@ -1196,17 +1293,111 @@ mod tests {
         }
     }
 
-    /// A structural guard, not a stylistic one. This call would make the
+    /// A structural guard, not a stylistic one. These calls would make the
     /// gateway report `Verified` for a platform whose TCB is out of date or
-    /// revoked, and it is the only check that survives someone marking the
+    /// revoked, and this is the only check that survives someone marking the
     /// behavioural tests `#[ignore]`.
+    ///
+    /// The needle is now the **prefix**, not the full spelling of one
+    /// function. `dcap-qvl` 0.6.1 exposes *four* overriding entry points, not
+    /// one: a `..._with_tcb_override` free function and its inherent-method
+    /// twin, plus a `..._claims_with_tcb_override` and a
+    /// `..._result_with_tcb_override`. The full-spelling needle this guard
+    /// used to carry matched only the first two and let the other two
+    /// through — the same shape of hole as banning `:?` and missing `{:#?}`,
+    /// which took a second fix round elsewhere in this file. The prefix
+    /// catches all four and anything upstream adds alongside them, and it is
+    /// free: the crate contains no such token, in code or in prose (this
+    /// module's own documentation was reworded so that stays true, which is
+    /// why none of the four is spelled out above).
     #[test]
     fn the_dangerous_override_is_never_called_anywhere_in_this_crate() {
-        let found = grep_crate(&needle("dangerous_verify_with", "_tcb_override"));
+        let found = grep_crate(&needle("dangerous_", "verify"));
         assert!(
             found.is_empty(),
-            "the TCB-override entry point appears in the crate: {found}"
+            "a TCB-override entry point appears in the crate: {found}"
         );
+    }
+
+    /// The guard Task 4's review left open, and the one the lexical formatter
+    /// ban structurally cannot provide.
+    ///
+    /// That ban is scoped to this file, via `include_str!("verify.rs")`. So
+    /// the escape it cannot see is a *different* file calling the upstream
+    /// verifier itself, binding the result to an inferred local, and handing
+    /// that local to a logger. Two lines, in any file in the crate: the
+    /// hardware serial, on disk.
+    ///
+    /// Such code names nothing the other guards look for. It contains no
+    /// field access for them to match, and no mention of the report's type —
+    /// the binding is inferred. And it lives in a file this module's
+    /// `include_str!` never reads. The only thing that closes it is
+    /// *containment*: the call
+    /// has to be reachable from exactly one file, and that file has to be the
+    /// one the formatter ban covers.
+    ///
+    /// Four needles, because reaching a report has four spellings:
+    ///
+    /// 1. the qualified call, which must occur exactly twice — the
+    ///    production call in `verify_at` and the one in
+    ///    `a_real_verified_report_leaks_none_of_its_hardware_identifier` —
+    ///    and both in this file;
+    /// 2. any `use` of the upstream `verify` module, which would let a caller
+    ///    write a bare call the first needle cannot see;
+    /// 3. upstream's own verifier *type* (distinct from this module's
+    ///    same-named one), whose inherent method returns the same report;
+    /// 4. the collateral client's fetch-then-verify shortcut, which returns a
+    ///    report without naming the `verify` module at all.
+    ///
+    /// The first needle matches the *call* form, with its opening
+    /// parenthesis, so the three places this crate discusses the function in
+    /// prose — `collateral.rs`'s module header and its `refresh` docs, and
+    /// one doc comment below — do not have to be reworded to keep a security
+    /// guard honest. The other three are spelled only as assembled fragments,
+    /// for the reason [`needle`] exists.
+    #[test]
+    fn the_upstream_verifier_is_called_from_this_file_and_no_other() {
+        let calls = grep_crate(&needle("dcap_qvl::verify::verify", "("));
+        let lines: Vec<&str> = calls.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "the upstream verifier is called {} times; it must be called \
+             exactly twice, both in src/gateway/verify.rs, so that the \
+             formatter ban scoped to this file covers every place a verified \
+             report can exist: {calls}",
+            lines.len()
+        );
+        for line in &lines {
+            assert!(
+                line.starts_with("src/gateway/verify.rs:"),
+                "the upstream verifier is called from a file the formatter \
+                 ban cannot see: {line}"
+            );
+        }
+
+        // The spellings the call-form needle cannot see.
+        for (what, pattern) in [
+            (
+                "an import of the upstream verify module",
+                needle("use dcap_qvl::", "verify"),
+            ),
+            (
+                "upstream's own verifier type",
+                needle("dcap_qvl::verify::", "QuoteVerifier"),
+            ),
+            (
+                "the fetch-and-verify shortcut",
+                needle("fetch_and", "_verify"),
+            ),
+        ] {
+            let found = grep_crate(&pattern);
+            assert!(
+                found.is_empty(),
+                "{what} appears in the crate, which reaches a verified report \
+                 without naming anything the other guards look for: {found}"
+            );
+        }
     }
 
     /// Same shape, for the hardware identifier.

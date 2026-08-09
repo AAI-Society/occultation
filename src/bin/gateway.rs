@@ -7,6 +7,7 @@ use occultation::gateway::meter::LinkabilityMeter;
 use occultation::gateway::pipeline::{LogSink, Pipeline, SINK_LOG_LEVEL};
 use occultation::gateway::proxy::{serve, Hooks};
 use occultation::gateway::refresh;
+use occultation::gateway::scrape;
 use occultation::gateway::source::HeaderSource;
 use occultation::gateway::verify::QuoteVerifier;
 use prometheus_client::registry::Registry;
@@ -27,6 +28,12 @@ struct Cli {
     /// Address the gateway accepts connections on
     #[arg(long)]
     listen: SocketAddr,
+    /// Address the Prometheus scrape endpoint listens on, separately from
+    /// `--listen`. Loopback by default; a `/metrics` route on the proxy port
+    /// would carve a path out of the upstream's URL space, so it is a second
+    /// listener rather than a route
+    #[arg(long, default_value = scrape::DEFAULT_METRICS_LISTEN)]
+    metrics_listen: SocketAddr,
     /// The relying party's API the gateway forwards every request to
     #[arg(long)]
     upstream: hyper::Uri,
@@ -130,11 +137,34 @@ async fn main() -> Result<()> {
     // the value for this call site to get wrong.
     let queue = refresh::spawn(Arc::clone(&cache), Arc::clone(&meter))?;
 
-    // Registered but not yet served: exposing a scrape endpoint is Task 8's,
-    // and it must not be reachable through the proxy's forwarding path. The
-    // registry is held here so the counters stay registered for it.
     let mut registry = Registry::default();
     let metrics = Arc::new(Metrics::new(&mut registry));
+
+    // Served on a listener of its own, never through the forwarding path —
+    // see `scrape.rs`'s module docs for why a `/metrics` route on the proxy
+    // port cannot be made to work without breaking either fail-open or the
+    // upstream's URL space.
+    //
+    // A bind failure is a startup decision and not a request-path one, and
+    // the decision is to run anyway. This gateway sits in front of somebody
+    // else's API; refusing to start because port 9469 was already taken would
+    // take that API down to protect a counter. Loud, and then onward.
+    match scrape::bind(cli.metrics_listen).await {
+        Ok(listener) => {
+            log::info!(
+                "metrics available at http://{}{}",
+                cli.metrics_listen,
+                scrape::METRICS_PATH
+            );
+            tokio::spawn(scrape::serve_on(listener, Arc::new(registry)));
+        }
+        Err(err) => log::error!(
+            "could not bind the metrics listener on {}: {err}. The gateway is \
+             starting anyway and will forward and measure as usual, but nothing \
+             can scrape it — the log is the only output channel until this is fixed",
+            cli.metrics_listen
+        ),
+    }
 
     let pipeline = Arc::new(Pipeline {
         source: Arc::new(HeaderSource::new(&attestation_header)),
@@ -207,6 +237,96 @@ mod tests {
             !non_test.contains("default_filter_or(\""),
             "main hard-codes a log level literal, which can drift below the sink's"
         );
+    }
+
+    /// The counters have to actually be served, and that is a property of
+    /// `main` alone.
+    ///
+    /// This is the mutation the integration suite cannot see. Delete the
+    /// `tokio::spawn(scrape::serve_on(..))` below and every test in this
+    /// crate stays green — `tests/gateway_hostile.rs` binds its own listener
+    /// and calls `serve_on` itself, exactly as Task 7's suite calls
+    /// `proxy::serve_on`, so none of them exercises this call site. The
+    /// result would be a gateway that registers three counters, records to
+    /// them on every request, and exposes them to nobody: precisely the state
+    /// this task exists to fix, restored by a one-line deletion.
+    ///
+    /// Source-checked for the same reason
+    /// `the_default_log_filter_is_derived_from_the_sinks_level` is, and with
+    /// the same acknowledged weakness: a validator or a spawn the caller may
+    /// simply drop has no type-level hold on being used.
+    #[test]
+    fn main_serves_the_metrics_on_a_listener_of_its_own() {
+        let src = include_str!("gateway.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        assert_eq!(src.matches(MARKER).count(), 1, "ambiguous test module");
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("fn main"),
+            "the scanned region does not reach main"
+        );
+        assert!(
+            non_test.contains("scrape::bind(cli.metrics_listen)"),
+            "main no longer binds the metrics listener"
+        );
+        assert!(
+            non_test.contains("tokio::spawn(scrape::serve_on(listener,"),
+            "main binds the metrics listener but never serves on it, so the \
+             counters stay write-only"
+        );
+        // ...and it is a *separate* listener. Binding the scrape endpoint on
+        // `cfg.listen` would either fail (the proxy already has that port) or,
+        // if the ordering were ever reversed, take the proxy's port away.
+        assert!(
+            !non_test.contains("scrape::bind(cli.listen)")
+                && !non_test.contains("scrape::bind(cfg.listen)"),
+            "the scrape endpoint must not share the proxy's listen address"
+        );
+    }
+
+    /// A bind failure must not stop the gateway starting.
+    ///
+    /// The gateway fronts somebody else's API. Refusing to start because the
+    /// metrics port was taken would take that API down to protect a counter,
+    /// which is the exact inversion of this crate's one hard guarantee. The
+    /// `?` operator is one character and would do it silently, so the absence
+    /// of one on this call is the property being pinned.
+    #[test]
+    fn a_metrics_bind_failure_does_not_stop_the_gateway_starting() {
+        let src = include_str!("gateway.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            !non_test.contains("scrape::bind(cli.metrics_listen).await?"),
+            "a bind failure on the metrics port must not abort startup; the \
+             gateway's job is being up"
+        );
+        assert!(
+            non_test.contains("Err(err) => log::error!("),
+            "a bind failure must be logged loudly rather than swallowed — a \
+             silently absent scrape endpoint is indistinguishable from a \
+             gateway that is measuring nothing"
+        );
+    }
+
+    /// The default scrape address must stay loopback, and must stay *derived*
+    /// from the constant `scrape.rs` pins as loopback rather than repeated as
+    /// a literal here. Two copies of an address is how one of them becomes
+    /// `0.0.0.0` — which publishes a fleet's TCB-diversity counters to
+    /// anything that can route to the host.
+    #[test]
+    fn the_default_metrics_address_is_the_loopback_constant_not_a_literal() {
+        let src = include_str!("gateway.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("default_value = scrape::DEFAULT_METRICS_LISTEN"),
+            "the default metrics address is no longer derived from scrape.rs"
+        );
+        let addr: SocketAddr = scrape::DEFAULT_METRICS_LISTEN
+            .parse()
+            .expect("the default metrics address parses");
+        assert!(addr.ip().is_loopback(), "{addr} is not loopback");
     }
 
     /// A header name no request could ever carry produces a gateway that

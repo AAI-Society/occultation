@@ -16,5 +16,6 @@ pub mod meter;
 pub mod pipeline;
 pub mod proxy;
 pub mod refresh;
+pub mod scrape;
 pub mod source;
 pub mod verify;

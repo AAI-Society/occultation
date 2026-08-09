@@ -1,8 +1,9 @@
 tdx-quote.bin
 tdx-quote-collateral.json
+sgx-quote.bin
 
-Vendored verbatim from dcap-qvl 0.6.1, files `sample/tdx_quote` and
-`sample/tdx_quote_collateral.json`:
+Vendored verbatim from dcap-qvl 0.6.1, files `sample/tdx_quote`,
+`sample/tdx_quote_collateral.json` and `sample/sgx_quote`:
 
     https://github.com/Phala-Network/dcap-qvl
 
@@ -15,6 +16,15 @@ unreachable without a genuine one.
 The collateral bundle's TCB info and QE identity were issued 2025-06-19 and
 expire 2025-07-19. Verification against it only succeeds with the clock
 pinned inside that window; see `NOW_INSIDE_COLLATERAL_WINDOW`.
+
+`sgx-quote.bin` is a real SGX enclave quote from a different platform
+(FMSPC 00a067110000, against the TDX fixture's b0c06f000000). Its collateral
+bundle is deliberately *not* vendored: it is used only by
+`tests/gateway_hostile.rs`, to show that a genuine quote for a platform this
+gateway holds no collateral for is reported `Unverified` rather than
+`Invalid`, and cached collateral would defeat that.
+
+See README.md in this directory for what each fixture is for.
 
 ------------------------------------------------------------------------
 

@@ -11,6 +11,173 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all-targets
+
+      # ---------------------------------------------------------------
+      # The gateway's structural guards, duplicated from src/gateway/verify.rs.
+      #
+      # Deliberate duplication: these are the only checks that survive someone
+      # marking the in-crate tests `#[ignore]`, which is a one-word edit that
+      # turns every guard in that file off at once. They are copied rather
+      # than delegated to `cargo test` for exactly that reason.
+      #
+      # Four things make this a real copy rather than a decorative one, and
+      # every one of them was a bug at some point on this branch. See the
+      # comments in the script itself: the grep exit-status check, needles
+      # assembled from fragments, `?}` rather than `:?`, and the positive
+      # control.
+      # ---------------------------------------------------------------
+      - name: gateway structural guards
+        shell: bash
+        run: |
+          # GitHub runs `run:` blocks under `bash -e`. Turn that off deliberately: every
+          # check below inspects grep's exit status itself, and grep exits 1 for "not
+          # found", which is the *passing* case here.
+          set +e
+          set -u
+
+          # The roots verify.rs's CRATE_ROOTS names. Enumerated, never `.`: `.`
+          # descends into target/, where the vendored dcap-qvl source matches every
+          # pattern here and would fail all of this permanently.
+          roots=""
+          for r in src tests benches examples; do
+            [ -d "$r" ] && roots="$roots $r"
+          done
+          case " $roots " in
+            *" src "*) ;;
+            *) echo "::error::not running from the package root: src/ is not here, and"
+               echo "::error::every guard below would report its pattern as absent"
+               exit 1 ;;
+          esac
+          case " $roots " in
+            *" tests "*) ;;
+            *) echo "::error::not running from the package root: tests/ is not here"
+               exit 1 ;;
+          esac
+
+          fail=0
+          MATCHES=""
+
+          # Search, and make a *failure to search* loud. grep exits 0 for found, 1 for
+          # not found, and 2 when it cannot search at all — which prints nothing and is
+          # indistinguishable from "clean" unless the status is checked. A wrong working
+          # directory in CI looks exactly like that.
+          #
+          # Sets a global rather than returning on stdout on purpose: a captured
+          # `$(...)` runs in a subshell, where `exit 1` would end the subshell and let
+          # the job carry on.
+          search() {
+            MATCHES=$(grep -rn --include='*.rs' -- "$1" $roots)
+            status=$?
+            if [ "$status" -gt 1 ]; then
+              echo "::error::grep could not search '$roots' (exit $status)."
+              echo "::error::Every check in this job would report its pattern as absent."
+              exit 1
+            fi
+          }
+
+          check_absent() {
+            search "$2"
+            if [ -n "$MATCHES" ]; then
+              echo "::error::$1"
+              echo "$MATCHES"
+              fail=1
+            fi
+          }
+
+          # 0. The positive control, first. Every check below asserts a pattern is
+          #    ABSENT, so all of them pass against a search that silently matches
+          #    nothing. This is the only one that distinguishes "the crate is clean"
+          #    from "the search did not happen".
+          search "fn tcb_config_""from_td10"
+          if [ -z "$MATCHES" ]; then
+            echo "::error::the positive control found nothing it must find, so every"
+            echo "::error::guard in this job is passing vacuously"
+            exit 1
+          fi
+
+          # 1. The TCB override: it would make the gateway report Verified for a
+          #    platform Intel has revoked. The needle is the PREFIX, because dcap-qvl
+          #    0.6 exposes four such entry points and the full spelling of one misses
+          #    two of the others.
+          check_absent \
+            "a TCB-override entry point appears in the crate" \
+            "dangerous_""verify"
+
+          # 2. The hardware identifier, by field access.
+          check_absent \
+            "something reads the hardware identifier field" \
+            '\.''ppid'
+
+          # 3. The hardware identifier, by the name of the type that carries it — which
+          #    a stored field, a return type, a destructuring pattern or a turbofish all
+          #    have to write, and which check 2 cannot see.
+          check_absent \
+            "something names the report type that carries the hardware identifier" \
+            "Verified""Report"
+
+          # 4. The guard Task 4's review left open. verify.rs's formatter ban is scoped
+          #    to verify.rs via include_str!, so ANOTHER file could call the upstream
+          #    verifier, bind the report to an inferred local and hand it to a logger —
+          #    naming no banned token, in a file the ban cannot see. Containment is the
+          #    only closure: the call must live in the one file the ban covers.
+          search "dcap_qvl::verify::""verify("
+          calls="$MATCHES"
+          n=0
+          [ -n "$calls" ] && n=$(printf '%s\n' "$calls" | wc -l | tr -d ' ')
+          if [ "$n" -ne 2 ]; then
+            echo "::error::the upstream verifier is called $n times; it must be called"
+            echo "::error::exactly twice, both in src/gateway/verify.rs, so that the"
+            echo "::error::formatter ban scoped to that file covers every place a"
+            echo "::error::verified report can exist"
+            echo "$calls"
+            fail=1
+          fi
+          if [ -n "$calls" ] && printf '%s\n' "$calls" | grep -qv '^src/gateway/verify\.rs:'; then
+            echo "::error::the upstream verifier is called from a file the formatter"
+            echo "::error::ban cannot see"
+            echo "$calls"
+            fail=1
+          fi
+          # ...and the three other spellings that reach a report without writing that
+          # call out.
+          check_absent "an import of the upstream verify module" "use dcap_qvl::""verify"
+          check_absent "upstream's own verifier type"            "dcap_qvl::verify::""QuoteVerifier"
+          check_absent "the fetch-and-verify shortcut"           "fetch_and""_verify"
+
+          # 5. The lexical formatter ban over verify.rs's non-test code. A grep for an
+          #    identifier cannot see a debug format applied to an inferred binding; this
+          #    can. `?}` and NOT `:?`: `{verified:#?}` and `{verified:x?}` contain `:`,
+          #    `#` and `?` but no `:?` at all, and both write the hardware serial to
+          #    disk. Every Rust debug format spec ends in `?` immediately before its
+          #    closing brace, so `?}` is complete where `:?` is not.
+          python3 - <<'PY'
+          import sys
+          src = open("src/gateway/verify.rs", encoding="utf-8").read()
+          marker = "#[cfg(test)]\nmod tests {"
+          if src.count(marker) != 1:
+              print("::error::ambiguous test module boundary in verify.rs")
+              sys.exit(1)
+          non_test = src.split(marker)[0]
+          if "fn verified_verdict" not in non_test or "fn verify_at" not in non_test:
+              print("::error::the scanned region of verify.rs does not reach its")
+              print("::error::implementation, so this ban would pass against a")
+              print("::error::truncated string")
+              sys.exit(1)
+          if "/*" in non_test:
+              print("::error::block comments would let banned code hide from this ban")
+              sys.exit(1)
+          code = "\n".join(l for l in non_test.splitlines() if not l.lstrip().startswith("//"))
+          bad = [t for t in ("?}", ":?", "log::", "println!", "eprintln!", "dbg!") if t in code]
+          if bad:
+              print(f"::error::{bad} appears in verify.rs's non-test code, which is how a")
+              print("::error::verified report reaches a log or a panic message without")
+              print("::error::naming anything the greps look for")
+              sys.exit(1)
+          PY
+          [ $? -ne 0 ] && fail=1
+
+          exit $fail
+
       - name: deterministic results are current
         run: |
           ./scripts/regen-results.sh
