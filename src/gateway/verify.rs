@@ -21,9 +21,15 @@
 //! first version shipped a hole. `serde_bytes` in `dcap-qvl` is a **rename**
 //! (its manifest maps the name to `serde-human-bytes`), which on a
 //! human-readable format calls `serialize_str` on lowercase hex — so JSON
-//! gives `"811dca2a…"`, not the number array vanilla `serde_bytes` would
+//! gives `"deadbeef…"`, not the number array vanilla `serde_bytes` would
 //! produce. Derived `Debug`, meanwhile, gives comma-*space* decimal:
-//! `[129, 29, 202, …]`. A leak check has to cover both shapes.
+//! `[222, 173, 190, …]`. Pretty `Debug` (`{:#?}`) gives one byte per line
+//! *with a trailing comma*, and hex `Debug` (`{:x?}`) gives unpadded hex
+//! (`[de, ad, be, ef, …, 9, …]`). A leak check has to cover all of them.
+//! (Those bytes are invented. The fixture's real identifier is not written
+//! anywhere in this crate, including in comments — it is recoverable from
+//! the committed sample quote by anyone who needs it, but writing it down
+//! is the exact habit this module exists to refuse.)
 //!
 //! Four guards, because no one of them is sufficient:
 //!
@@ -266,7 +272,8 @@ impl QuoteVerifier {
     /// gateway report `Verified` for a platform Intel has revoked. It is
     /// never called here, and
     /// `the_dangerous_override_is_never_called_anywhere_in_this_crate`
-    /// asserts the full spelling appears nowhere under `src/`. (That is also
+    /// asserts the full spelling appears nowhere in `src/`, `tests/`,
+    /// `benches/` or `examples/`. (That is also
     /// why this comment does not write the name out in full — the test would
     /// find its own documentation.)
     pub fn verify(&self, raw: &RawAttestation) -> QuoteVerdict {
@@ -580,6 +587,14 @@ mod tests {
         let lower = hex_lower(&bytes);
         let upper = lower.to_uppercase();
         let debug_form = format!("{bytes:?}");
+        let pretty_form = format!("{bytes:#?}");
+        let hex_debug = format!("{bytes:x?}");
+        let upper_hex_debug = format!("{bytes:X?}");
+        // Redundant against `debug_form` at first glance — squeezed, that is
+        // this string wrapped in brackets — but deliberately kept unbracketed:
+        // pretty `Debug` emits a *trailing comma* before its closing bracket,
+        // so `[129,…,253]` does not occur in a `{:#?}` dump while `129,…,253`
+        // still does.
         let joined = bytes
             .iter()
             .map(|b| b.to_string())
@@ -591,11 +606,20 @@ mod tests {
             verdict
         );
 
-        // Compared with all whitespace stripped, so the match cannot depend
-        // on how a formatter chose to space its separators — the exact
-        // detail that let the leak through before.
+        // Normalized before comparison, so a match cannot depend on how a
+        // formatter chose to lay out its separators. Stripping whitespace is
+        // not enough on its own: once a pretty `Debug` dump is *inside* a
+        // string field, both `serde_json` and `Debug for str` escape its
+        // newlines into the two literal characters `\` and `n`, which are not
+        // whitespace and so survive the strip — leaving `[\n129,\n29,…` and
+        // matching none of the needles. The escape pairs are removed first.
         fn squeeze(s: &str) -> String {
-            s.chars().filter(|c| !c.is_whitespace()).collect()
+            s.replace("\\n", "")
+                .replace("\\r", "")
+                .replace("\\t", "")
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect()
         }
         let rendered = squeeze(&rendered);
 
@@ -606,6 +630,9 @@ mod tests {
             ("lowercase hex", &lower),
             ("uppercase hex", &upper),
             ("a Debug byte array", &debug_form),
+            ("a pretty Debug byte array", &pretty_form),
+            ("a hex Debug byte array", &hex_debug),
+            ("an upper-hex Debug byte array", &upper_hex_debug),
             ("a comma-joined byte array", &joined),
         ] {
             assert!(
@@ -1059,9 +1086,14 @@ mod tests {
     /// that silently matched nothing. This one asserts a pattern that must
     /// exist really is found, which is the only thing distinguishing "the
     /// crate is clean" from "the search did not happen".
+    ///
+    /// The needle is assembled at runtime for the same reason the guards'
+    /// are: spelled as a literal it would match *itself* on this very line
+    /// as well as the definition, so renaming the implementation function
+    /// would leave the control green and it would no longer be a sentinel.
     #[test]
     fn the_structural_guards_are_actually_searching_something() {
-        let found = grep_crate("fn tcb_config_from_td10");
+        let found = grep_crate(&needle("fn tcb_config_", "from_td10"));
         assert!(
             found.contains("src/gateway/verify.rs"),
             "grep found no definition it must find; the other guards in this \
@@ -1084,18 +1116,46 @@ mod tests {
     #[test]
     fn the_verifier_hands_nothing_to_a_formatter_it_did_not_choose() {
         let src = include_str!("verify.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+
         // Split on the test module's own header, not on a bare `#[cfg(test)]`
         // — `TcbConfig::for_test` carries one of those far above here, so the
         // naive split silently truncated the searched region to the first
-        // hundred lines. The assertion below is what caught that.
-        let non_test = src
-            .split("#[cfg(test)]\nmod tests {")
-            .next()
-            .expect("the module has a non-test half");
+        // hundred lines, and the assertion below is what caught that.
+        //
+        // What actually makes this region safe is a property worth writing
+        // down, because it is invisible and a future "simplification" would
+        // delete it: if MARKER is ever not found, `.next()` yields the
+        // *whole file*, which trips both the `/*` assertion below (this
+        // guard's own doc comment holds the file's only `/*`) and the token
+        // ban (this guard's own banned-list array holds every token). The
+        // failure mode of a broken split is therefore loud and
+        // self-referential, not silent. The two-name assertion is weaker
+        // than it looks — it proves only that the region reaches
+        // `verify_at`'s signature, not where the region *ends*; that half is
+        // covered by the tail check.
+        let non_test = src.split(MARKER).next().expect("split yields a head");
         assert!(
             non_test.contains("fn verified_verdict") && non_test.contains("fn verify_at"),
-            "the split found no implementation, so this guard would pass \
-             against an empty string"
+            "the scanned region does not reach the implementation, so this \
+             guard would pass against a truncated string"
+        );
+
+        // ...and nothing may live *after* the test module, which
+        // `split(..).next()` would discard just as silently as it discarded
+        // the implementation before. The test module's own items are all
+        // indented, so the only column-zero line in the tail is the brace
+        // that closes it at end of file.
+        assert_eq!(src.matches(MARKER).count(), 1, "ambiguous test module");
+        let tail = src.split(MARKER).nth(1).expect("split yields a tail");
+        let after_test_module: Vec<&str> = tail
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
+            .collect();
+        assert_eq!(
+            after_test_module,
+            ["}"],
+            "code appears after the test module, where this guard cannot see it"
         );
 
         // Comments are not code, and this module's documentation has to be
@@ -1113,7 +1173,16 @@ mod tests {
             .join("\n");
         assert!(code.contains("fn verified_verdict"));
 
-        for banned in [":?", "log::", "println!", "eprintln!", "dbg!"] {
+        // `?}` rather than `:?`, because `:?` is incomplete: `{v:#?}` and
+        // `{v:x?}` contain no `:?` at all, and both were verified to slip
+        // past the earlier ban and every needle. Every Rust debug format
+        // spec terminates with `?` immediately before `}` — `{:?}`, `{v:?}`,
+        // `{:#?}`, `{:x?}`, `{:X?}`, `{:#x?}`, `{:>10?}` — so `?}` is
+        // complete where `:?` was not, and it additionally catches a string
+        // continuation splitting the token across lines, where the source
+        // holds no `:?` but the continued line opens with `?}`. `:?` is kept
+        // alongside it only so the failure message names the common case.
+        for banned in ["?}", ":?", "log::", "println!", "eprintln!", "dbg!"] {
             assert!(
                 !code.contains(banned),
                 "{banned} appears in the verifier's non-test code, which is \
