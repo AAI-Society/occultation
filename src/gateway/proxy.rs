@@ -305,11 +305,21 @@ pub async fn serve(cfg: GatewayConfig, hooks: Hooks) -> Result<(), ProxyError> {
 /// so tests can bind an ephemeral port, read it back with `local_addr()`,
 /// and still exercise exactly the code `serve` runs, rather than a
 /// test-only stand-in.
-async fn serve_on(
+///
+/// Public because Task 7's fail-open suite lives in `tests/`, outside the
+/// crate, and has to bind an ephemeral port to know where to send requests.
+/// It re-runs `validate_upstream` rather than trusting the caller to have
+/// done it: `serve`'s check happens before the bind so an operator learns
+/// about an `https://` upstream at startup, and that ordering is the only
+/// reason the check is not here in the first place — an entry point that
+/// skipped it entirely would let a caller stand up a proxy that answers every
+/// request with a synthesised 502.
+pub async fn serve_on(
     listener: TcpListener,
     upstream: hyper::Uri,
     hooks: Hooks,
 ) -> Result<(), ProxyError> {
+    validate_upstream(&upstream)?;
     run(listener, upstream, Arc::new(hooks)).await;
     Ok(())
 }
@@ -691,6 +701,26 @@ mod tests {
             pccs_url: "http://example.invalid".to_string(),
         };
         let result = serve(cfg, Hooks::noop()).await;
+        assert!(
+            matches!(result, Err(ProxyError::InvalidUpstream { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// `serve_on` is a public entry point now, so the upstream check has to
+    /// hold there too — otherwise a caller who binds their own listener gets
+    /// a proxy that 502s every request and never learns why.
+    #[tokio::test]
+    async fn serve_on_rejects_a_non_http_upstream_too() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind for serve_on check");
+        let result = serve_on(
+            listener,
+            "https://api.internal".parse().unwrap(),
+            Hooks::noop(),
+        )
+        .await;
         assert!(
             matches!(result, Err(ProxyError::InvalidUpstream { .. })),
             "{result:?}"
