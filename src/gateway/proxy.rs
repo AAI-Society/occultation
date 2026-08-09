@@ -372,9 +372,16 @@ mod tests {
         addr
     }
 
-    /// Echoes the method, the `x-agent` header (if present) and the body
-    /// length back in the response body, so a test can assert on all three
-    /// at once without inventing a bespoke protocol per assertion.
+    /// Echoes the method, the `x-agent` header (if present), the body
+    /// length, and the *names* of every other header it saw, back in the
+    /// response body — so a test can assert on all of "method, a specific
+    /// header's value, body length, which header names arrived" at once.
+    ///
+    /// `Host` and `Content-Length` are excluded from the name list: both are
+    /// added unconditionally by any HTTP/1.1 client sending a body, not
+    /// something a caller intentionally set, and `content-length` contains
+    /// `te` as a substring — left in, it would make a `body.contains("te")`
+    /// assertion pass even when the real `TE` header was correctly stripped.
     async fn spawn_reflecting_upstream() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -398,13 +405,23 @@ mod tests {
                             .and_then(|v| v.to_str().ok())
                             .map(|v| format!("x-agent={v}"))
                             .unwrap_or_default();
+                        let mut names: Vec<&str> = req
+                            .headers()
+                            .keys()
+                            .map(|name| name.as_str())
+                            .filter(|name| *name != "host" && *name != "content-length")
+                            .collect();
+                        names.sort_unstable();
+                        names.dedup();
+                        let names = names.join(",");
                         let body_len = req
                             .into_body()
                             .collect()
                             .await
                             .map(|c| c.to_bytes().len())
                             .unwrap_or(0);
-                        let reflection = format!("{method} {agent_header} len={body_len}");
+                        let reflection =
+                            format!("{method} names=[{names}] {agent_header} len={body_len}");
                         Ok::<_, std::convert::Infallible>(Response::new(Full::new(Bytes::from(
                             reflection,
                         ))))
@@ -438,6 +455,47 @@ mod tests {
                             .body(Full::new(Bytes::from("ok")))
                             .expect("a fixed test header and body cannot fail to build");
                         Ok::<_, std::convert::Infallible>(response)
+                    });
+                    let _ = http1::Builder::new().serve_connection(io, service).await;
+                });
+            }
+        });
+        addr
+    }
+
+    /// Answers with every header in `headers`, so a test can check that a
+    /// set of response headers — including hop-by-hop ones that should be
+    /// stripped — is handled correctly all at once.
+    async fn spawn_upstream_with_headers(headers: &[(&str, &str)]) -> SocketAddr {
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind headers upstream");
+        let addr = listener.local_addr().expect("headers upstream local addr");
+        tokio::spawn(async move {
+            loop {
+                let (stream, _peer) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => continue,
+                };
+                let headers = headers.clone();
+                tokio::spawn(async move {
+                    let io = TokioIo::new(stream);
+                    let service = service_fn(move |_req: Request<Incoming>| {
+                        let headers = headers.clone();
+                        async move {
+                            let mut builder = Response::builder();
+                            for (name, value) in &headers {
+                                builder = builder.header(name.as_str(), value.as_str());
+                            }
+                            let response = builder
+                                .body(Full::new(Bytes::from("ok")))
+                                .expect("fixed test headers and body cannot fail to build");
+                            Ok::<_, std::convert::Infallible>(response)
+                        }
                     });
                     let _ = http1::Builder::new().serve_connection(io, service).await;
                 });
@@ -569,6 +627,73 @@ mod tests {
         assert_eq!(
             header_of(&gw, "/x", "content-type").await.unwrap(),
             "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_request_headers_do_not_reach_the_upstream() {
+        // Without this, a client sending Transfer-Encoding produces an upstream
+        // request carrying both Transfer-Encoding and Content-Length — the
+        // request-smuggling shape, and the reason this function exists.
+        let upstream = spawn_reflecting_upstream().await; // must echo the header names it saw
+        let gw = spawn_gateway(upstream, Hooks::noop()).await;
+        let seen = post(
+            &gw,
+            "/x",
+            &[
+                ("connection", "x-custom"),
+                ("te", "trailers"),
+                ("x-custom", "drop-me"),
+                ("x-keep", "keep-me"),
+            ],
+            b"hi",
+        )
+        .await
+        .unwrap();
+        for gone in ["connection", "te", "x-custom"] {
+            assert!(!seen.contains(gone), "{gone} reached the upstream: {seen}");
+        }
+        assert!(
+            seen.contains("x-keep"),
+            "an ordinary header was stripped: {seen}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hop_by_hop_response_headers_do_not_reach_the_client() {
+        let upstream = spawn_upstream_with_headers(&[
+            ("connection", "x-secret"),
+            ("x-secret", "leak"),
+            ("content-type", "application/json"),
+        ])
+        .await;
+        let gw = spawn_gateway(upstream, Hooks::noop()).await;
+        assert!(header_of(&gw, "/x", "connection").await.is_err());
+        assert!(
+            header_of(&gw, "/x", "x-secret").await.is_err(),
+            "a Connection-named header leaked"
+        );
+        assert_eq!(
+            header_of(&gw, "/x", "content-type").await.unwrap(),
+            "application/json"
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_rejects_a_non_http_upstream_before_binding() {
+        // `validate_upstream` runs before the bind, so this needs no port at
+        // all — a real bind would mean `serve` tried to stand up a proxy in
+        // front of an upstream it can never successfully speak to.
+        let cfg = GatewayConfig {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            upstream: "https://api.internal".parse().unwrap(),
+            salt_rotation: std::time::Duration::from_secs(3600),
+            pccs_url: "http://example.invalid".to_string(),
+        };
+        let result = serve(cfg, Hooks::noop()).await;
+        assert!(
+            matches!(result, Err(ProxyError::InvalidUpstream { .. })),
+            "{result:?}"
         );
     }
 
