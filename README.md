@@ -224,6 +224,25 @@ $ ./scripts/regen-results.sh                   # regenerate everything the paper
 Exit codes: `0` success, `1` policy violation (`--min-set`, `--max-stall`),
 `2` bad input, `3` a modelled component requested without `--allow-modelled`.
 
+## How this maps to the standard
+
+occultation is a research tool for the
+[**Proof-of-Control Standard**](https://github.com/AAI-Society/ov-poc-standard).
+C5 Identity carries an open question the standard has not answered; this tool
+supplies the evidence it needs, and finds that four requirements are in
+structural tension with the answer:
+
+| | Standard | |
+| :-- | :-- | :-- |
+| ✅ | **C5.2** — *`[WG-INPUT NEEDED]`: whether the standard supports verifiable-but-unlinkable identity binding as an implementer-selectable option, **and how*** | measures what the option costs per action, and what breaks when it runs out |
+| ⚠️ | **C5.1.1** — every execution record carries the agent **and** principal identifier | the field a profile must suspend, not satisfy |
+| ⚠️ | **C5.1.4** — the credential is bound to an attested execution environment | the binding leaks: TCB collateral is itself a fingerprint, and 120 identical hosts split 71/34/11/3/1 |
+| ⚠️ | **C5.2.2** — a receiver validates sender identity from published key material | under unlinkability there is no persistent sender identity to validate |
+| ⚠️ | **C7.3.1** — records hash-chained so reordering invalidates the chain | a global chain links every action by construction; decoupling it surrenders *no action was deleted* |
+| ⚡ | **C10.1.4** — the statement lists properties met and Tier reached | it must also name which identity profile is in force — a verifier's capabilities differ |
+
+**[→ Full mapping, with what it costs and what is only modelled](docs/STANDARD-MAP.md)**
+
 ## The paper
 
 [`paper/main.pdf`](paper/main.pdf) — *What Unlinkability Costs at Agent Action
