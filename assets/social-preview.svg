@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="occultation — two costs, each under a 15 ms budget, whose sum is not">
+  <title>occultation</title>
+
+  <rect width="1280" height="640" fill="#0A0A0A"/>
+  <rect y="630" width="1280" height="10" fill="#CFFF04"/>
+
+  <!-- mark, top left -->
+  <g transform="translate(96, 78) scale(0.60)">
+    <circle cx="128" cy="128" r="92" fill="none" stroke="#CFFF04" stroke-width="6" opacity="0.32"/>
+    <mask id="hidden">
+      <circle cx="112" cy="128" r="62" fill="#fff"/>
+      <circle cx="158" cy="106" r="62" fill="#000"/>
+    </mask>
+    <circle cx="112" cy="128" r="62" fill="#CFFF04" mask="url(#hidden)"/>
+    <circle cx="158" cy="106" r="62" fill="none" stroke="#CFFF04" stroke-width="6" opacity="0.32"/>
+  </g>
+
+  <!-- wordmark: 11 chars at 0.6em advance = ~581px, ends well clear of the table column -->
+  <text x="96" y="352"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="88" font-weight="700" fill="#F0EDEA" letter-spacing="-2">occultation</text>
+
+  <text x="100" y="406"
+        font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="29" fill="#8F8A82">What does unlinkability cost per action, and what breaks when it runs out?</text>
+
+  <text x="100" y="470"
+        font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+        font-size="31" fill="#F0EDEA">Each half fits the budget. The action pays for both.</text>
+
+  <!-- the finding: labels left at 780, figures right-aligned at 1184 -->
+  <g transform="translate(0, 0)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="780" y="128"  font-size="30" fill="#8F8A82">presentation</text>
+    <text x="1184" y="128" font-size="30" fill="#F0EDEA" text-anchor="end">13.80 ms</text>
+
+    <text x="780" y="182"  font-size="30" fill="#8F8A82">verification</text>
+    <text x="1184" y="182" font-size="30" fill="#F0EDEA" text-anchor="end">4.20 ms</text>
+
+    <line x1="780" y1="208" x2="1184" y2="208" stroke="#CFFF04" stroke-width="2" opacity="0.5"/>
+
+    <text x="780" y="256"  font-size="30" fill="#CFFF04">sum</text>
+    <text x="1184" y="256" font-size="30" font-weight="700" fill="#CFFF04" text-anchor="end">18.00 ms</text>
+
+    <text x="780" y="312"  font-size="27" fill="#8F8A82">budget</text>
+    <text x="1184" y="312" font-size="27" fill="#8F8A82" text-anchor="end">15.00 ms</text>
+  </g>
+
+  <g transform="translate(100, 536)">
+    <rect width="34" height="5" rx="2" fill="#CFFF04"/>
+    <text x="52" y="10"
+          font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+          font-size="22" font-weight="600" fill="#CFFF04" letter-spacing="1.5">ADVANCED AI SOCIETY</text>
+    <text x="352" y="10"
+          font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+          font-size="22" fill="#8F8A82">· PROOF-OF-CONTROL INITIATIVE</text>
+  </g>
+</svg>
