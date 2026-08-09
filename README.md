@@ -4,7 +4,7 @@
 
 <p align="center">
   <img alt="Rust 2021" src="https://img.shields.io/badge/rust-2021%20%C2%B7%201.90%2B-CFFF04?style=flat-square&labelColor=0A0A0A">
-  <img alt="364 tests" src="https://img.shields.io/badge/tests-364%20passing-CFFF04?style=flat-square&labelColor=0A0A0A">
+  <img alt="387 tests" src="https://img.shields.io/badge/tests-387%20passing-CFFF04?style=flat-square&labelColor=0A0A0A">
   <img alt="Apache 2.0" src="https://img.shields.io/badge/licence-Apache--2.0-CFFF04?style=flat-square&labelColor=0A0A0A">
   <img alt="paper included" src="https://img.shields.io/badge/paper-included-CFFF04?style=flat-square&labelColor=0A0A0A">
 </p>
@@ -212,7 +212,7 @@ ignore CI.
 ```console
 $ git clone https://github.com/Task-force-for-AI-agents-in-Healthcare/occultation
 $ cd occultation
-$ cargo test                                   # 364 tests, incl. the four acceptance tests
+$ cargo test                                   # 387 tests, incl. the four acceptance tests
 $ cargo run --release -- bench --composed      # the correction
 $ cargo run --release -- pool --burst 5000     # exhaustion, and what it leaks
 $ cargo run --release -- anonymity --fleet examples/fleet-drifted.toml
@@ -270,6 +270,18 @@ does the same with an agent misbehaving on purpose.
 This is a measuring instrument in the request path of somebody else's revenue
 API. It is allowed to be wrong about a quote. It is not allowed to be the
 reason the API is down.
+
+Two bounds exist for that last sentence rather than against it, and neither
+refuses a request. `--header-read-timeout` (30s, hyper's own default) closes a
+connection that never finishes sending its headers: without it, one client
+holding half-open sockets exhausts the process's file descriptors and the
+fronted API becomes unreachable to everybody, which was demonstrated against
+this binary. `--max-connections` (1024) caps how many connections are served
+at once, so a burst stays inside that descriptor budget — the permit is taken
+*before* `accept()`, so an over-cap connection waits in the kernel's listen
+backlog and is served as earlier ones finish, never closed or rejected.
+**Neither is a rate limit**, which remains a non-goal: nothing here looks at
+who is connecting or how often.
 
 ### The verification is real; `Unverified` is not a soft yes
 
