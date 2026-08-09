@@ -3,6 +3,54 @@ use crate::modelled::Provenance;
 use serde_json::json;
 use std::time::Duration;
 
+/// Rebuild `value` with every object's keys in ascending order, recursively.
+///
+/// **Do not delete this as redundant.** It looks redundant, and for most of
+/// this crate's life it was: `serde_json::Map` is a `BTreeMap` by default, so
+/// every object came out sorted for free and `results/deterministic/` could
+/// claim to be byte-identical on any host.
+///
+/// It is not the default any more, and nothing in this repository asked for
+/// the change. `dcap-qvl` — added for the gateway's quote verification —
+/// declares `serde_json` with the `preserve_order` feature, Cargo unifies
+/// features across the whole graph, and `serde_json::Map` therefore became an
+/// `IndexMap` for *every* crate here. Struct-field order silently replaced
+/// alphabetical order in every file this tool writes. The values did not
+/// change; the bytes did, in five committed research files the paper reads at
+/// build time, with nothing in this repository touched.
+///
+/// So the guarantee was never "byte-identical on any host". It was
+/// "byte-identical given this lockfile", and one transitive dependency's
+/// feature flag was enough to show the difference. Sorting explicitly is what
+/// makes the original claim true rather than incidental: this function
+/// produces the same bytes with the feature on or off, so a future dependency
+/// cannot move them again.
+///
+/// `writers_sort_their_keys_whatever_serde_json_was_compiled_with` pins it,
+/// and detects which regime the current build is in so it cannot pass
+/// vacuously in either.
+pub fn canonical_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<(String, serde_json::Value)> = map.into_iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k, canonical_json(v)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            // Arrays are ordered data, never reordered — `partitions` is
+            // sorted by set size and `rows` is in report order, and sorting
+            // either would corrupt the result rather than canonicalize it.
+            serde_json::Value::Array(items.into_iter().map(canonical_json).collect())
+        }
+        scalar => scalar,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Table,
@@ -162,12 +210,13 @@ impl Table {
         "Rows marked MODELLED come from stubs that provide no security. \
          Their cost is representative; nothing else about them is.";
 
+    /// Keys sorted, explicitly — see [`canonical_json`].
     pub fn to_json(&self) -> serde_json::Value {
         let mut notes = self.notes.clone();
         if self.rows.iter().any(Row::is_modelled) {
             notes.push(Self::MODELLED_FOOTER.to_string());
         }
-        json!({
+        canonical_json(json!({
             "title": self.title,
             "notes": notes,
             "rows": self.rows.iter().map(|r| json!({
@@ -178,13 +227,94 @@ impl Table {
                 "provenance": r.provenance,
                 "ratio_to_ed25519": r.ratio,
             })).collect::<Vec<_>>(),
-        })
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Is `serde_json` compiled with `preserve_order`?
+    ///
+    /// Detected rather than assumed, because the answer changes what the
+    /// tests below are able to prove and neither answer may be allowed to
+    /// make them vacuous. With the feature off, `serde_json::Map` is a
+    /// `BTreeMap` and everything is sorted whether or not anyone sorts it —
+    /// so "the output is sorted" is true for free and proves nothing about
+    /// [`canonical_json`]. With it on, insertion order survives and the same
+    /// assertion has teeth. This crate is currently in the second regime, via
+    /// `dcap-qvl`; it was in the first for most of its life, and could return
+    /// to it if that dependency ever drops the feature.
+    fn insertion_order_survives() -> bool {
+        let out_of_order = json!({ "b": 1, "a": 2 });
+        out_of_order
+            .as_object()
+            .expect("a json! object is an object")
+            .keys()
+            .next()
+            .map(String::as_str)
+            == Some("b")
+    }
+
+    /// Every object in `value`, at every depth, has its keys in ascending
+    /// order.
+    fn keys_are_sorted(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                let keys: Vec<&String> = map.keys().collect();
+                keys.windows(2).all(|w| w[0] <= w[1]) && map.values().all(keys_are_sorted)
+            }
+            serde_json::Value::Array(items) => items.iter().all(keys_are_sorted),
+            _ => true,
+        }
+    }
+
+    /// The guarantee `results/deterministic/` rests on, and the reason
+    /// [`canonical_json`] exists rather than being deleted as redundant.
+    ///
+    /// Three assertions, and the third is what stops the other two being
+    /// free. Under `preserve_order` the *uncanonicalized* value must actually
+    /// be unsorted — otherwise `canonical_json` could be the identity
+    /// function and everything here would still pass. Under the default
+    /// `BTreeMap` regime that assertion is unavailable (nothing is ever
+    /// unsorted), and the test says so out loud rather than quietly
+    /// weakening.
+    #[test]
+    fn writers_sort_their_keys_whatever_serde_json_was_compiled_with() {
+        // Nested, and out of order at both levels.
+        let raw = json!({
+            "zebra": 1,
+            "alpha": { "delta": [ { "yankee": 1, "bravo": 2 } ], "charlie": 3 },
+            "mike": 4,
+        });
+
+        assert!(
+            keys_are_sorted(&canonical_json(raw.clone())),
+            "canonical_json left an object unsorted at some depth"
+        );
+
+        // Values must survive the reordering untouched — a "canonicalizer"
+        // that dropped or altered a field would satisfy the sort assertion.
+        assert_eq!(
+            canonical_json(raw.clone()),
+            raw,
+            "canonical_json changed the data, not only the key order              (serde_json::Value compares by content, so this is an equality              of the maps regardless of their iteration order)"
+        );
+
+        if insertion_order_survives() {
+            assert!(
+                !keys_are_sorted(&raw),
+                "serde_json preserves insertion order in this build, yet the                  raw value came out sorted anyway — the fixture above is no                  longer out of order, so this test proves nothing"
+            );
+        } else {
+            // The BTreeMap regime. Nothing can be unsorted, so the assertion
+            // above is unavailable; this branch exists so that fact is
+            // visible in the source rather than silently absent.
+            assert!(keys_are_sorted(&raw));
+        }
+    }
+
     use crate::cost::Source;
     use crate::modelled::Provenance;
     use std::time::Duration;

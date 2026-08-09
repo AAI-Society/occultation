@@ -24,7 +24,7 @@ Every claim below that touches ECDAA or threshold escrow is a claim about
 | :-- | :-- | :-- | :-- |
 | [**C5.2** Inter-Agent Identity](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C05-Identity.md#c52-inter-agent-identity) | *`[WG-INPUT NEEDED]` — whether the standard supports verifiable-but-unlinkable identity binding as an implementer-selectable option, **and how*** | Measures what the option costs per action, and what breaks when the pre-computation it depends on runs out | ✅ **supplies the evidence** |
 | [**C5.1.1**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C05-Identity.md#c51-agent-and-principal-binding) | Every execution record carries the **agent instance identifier and the principal identifier**, so any sampled action resolves to a named principal (Level 1) | This is the requirement a profile must **suspend**, not satisfy. Cross-RP unlinkability and "resolves to a named principal" cannot both hold for the same relying party | ⚠️ **structural conflict** |
-| [**C5.1.4**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C05-Identity.md#c51-agent-and-principal-binding) | The credential is **bound to an attested execution environment** (Level 3) | The binding leaks what the credential hides. Quote collateral is itself a fingerprint: 120 identical hosts split into 5 groups of 71/34/11/3/1 after six weeks of ordinary drift, one host alone | ⚠️ **contradicts** |
+| [**C5.1.4**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C05-Identity.md#c51-agent-and-principal-binding) | The credential is **bound to an attested execution environment** (Level 3) | The binding leaks what the credential hides. Quote collateral is itself a fingerprint: 120 identical hosts split into 5 groups of 71/34/11/3/1 after six weeks of ordinary drift, one host alone. **`occultation-gateway` now measures this against live traffic** — real quotes, verified for real against Intel's chain — rather than against a synthetic fleet description; and the attributes it partitions on are the ones a DCAP report actually carries, which are not the ones this row's prose names (see below) | ⚠️ **contradicts** |
 | [**C5.2.2**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C05-Identity.md#c52-inter-agent-identity) | A receiver validates **sender identity** from published key material, without contacting the sender's operator (Level 3) | Under unlinkability there is no persistent sender identity to validate. The property degrades to *some valid member of a group*, which is a different claim | ⚠️ **needs restatement** |
 | [**C7.3.1**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C07-Evidence-Generation-and-Properties.md#c73-the-tamper-evident-property) | Records are hash-chained or Merkle-anchored so modifying, inserting or **reordering** any record invalidates the chain (Level 2) | A global chain links every action *by construction*, whatever signature scheme wraps it. Decoupling into per-session chains buys unlinkability and surrenders *no action was deleted* | ⚠️ **in tension** |
 | [**C7.2.4**](https://github.com/AAI-Society/ov-poc-standard/blob/master/0.1/en/0x10-C07-Evidence-Generation-and-Properties.md#c72-the-contemporaneous-property) | Hardware attestation binds the evidence signing key: the key's digest appears in the attested report body | Whether an anonymous platform attestation can carry that digest without re-emitting a platform identifier is **open**. ECDAA is modelled here, so this tool costs the composition and does not settle it | ⚠️ **open, and modelled here** |
@@ -64,6 +64,19 @@ SVN, PCE SVN, microcode revision, QE identity, PCS chain — and that collateral
 is a fingerprint. Two agents on different patch levels are distinguishable
 *even under a perfect anonymous attestation scheme*, because the anonymity set
 is not "every agent" but "every agent on an identical TCB".
+
+**That list is the desk study's, and it predates any measurement.** It is left
+as written because it is the record of what was claimed, but an implementer
+should not take it as the field list. Against `dcap-qvl` 0.6 a real quote
+carries, for TDX 1.0, `fmspc`, `tee_tcb_svn`, `mr_seam`, `mr_signer_seam`,
+`seam_attributes`, `td_attributes` and `xfam` — plus `tee_tcb_svn2` on TDX
+1.5, and a different list again for SGX. There is **no `pce_svn` and no
+`microcode`** on any report type: the PCE SVN lives in the PCK certificate
+extension rather than the report body, and microcode revision is not an
+exposed field at all. The conclusion is unchanged and if anything sharpened —
+`td_attributes` and `xfam` are set at TD creation, so the fingerprint varies
+with workload configuration and not only with patch level. `README.md`'s
+gateway section carries the full lists.
 
 `occultation anonymity` partitions a fleet by that collateral:
 

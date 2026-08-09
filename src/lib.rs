@@ -15,6 +15,7 @@ pub mod bls;
 pub mod cost;
 pub mod ecdaa;
 pub mod escrow;
+pub mod gateway;
 pub mod harness;
 pub mod modelled;
 pub mod pool;

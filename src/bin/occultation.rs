@@ -246,7 +246,19 @@ fn run() -> Result<ExitCode> {
                         obj.insert("refill_cost_origin".to_string(), refill_origin.into());
                         obj.insert("online_cost_origin".to_string(), online_origin.into());
                     }
-                    println!("{}", serde_json::to_string_pretty(&v)?);
+                    // Re-sorted after the insertions, not before: `to_json`
+                    // canonicalizes what it builds, and these two keys are
+                    // added afterwards. Without this they land wherever the
+                    // map's insertion order puts them — which, since
+                    // `dcap-qvl` turned on `serde_json/preserve_order`
+                    // graph-wide, is at the end rather than in their
+                    // alphabetical places. That is one third of the byte
+                    // drift in `results/deterministic/pool-burst-*.json`.
+                    // See `report::canonical_json`.
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&occultation::report::canonical_json(v))?
+                    );
                 }
             }
             if let Some(limit) = max_stall {

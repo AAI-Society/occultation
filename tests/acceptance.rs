@@ -452,3 +452,106 @@ fn policy_violations_exit_one_and_bad_input_exits_two() {
         .expect("runs");
     assert_eq!(bad_input.status.code(), Some(2));
 }
+
+// ---------------------------------------------------------------------
+// The results contract: byte-stability of results/deterministic/
+// ---------------------------------------------------------------------
+
+/// Every writer that feeds `results/` emits sorted keys, over the *real*
+/// inputs `scripts/regen-results.sh` uses.
+///
+/// `results/deterministic/`'s stated guarantee is that it is byte-identical
+/// on any host, and CI enforces it by regenerating and diffing. That
+/// guarantee was never actually held by anything: `serde_json::Map` happened
+/// to be a `BTreeMap`, so objects came out sorted for free — until `dcap-qvl`
+/// arrived for the gateway's quote verification, declaring `serde_json` with
+/// `preserve_order`. Cargo unifies features graph-wide, the map became an
+/// `IndexMap`, and every one of these files changed its bytes with nothing in
+/// this repository touched. Values were identical throughout; only key order
+/// moved. Nobody noticed for five commits, because nobody ran the regen.
+///
+/// So the real guarantee was "byte-identical given this lockfile".
+/// `report::canonical_json` is what makes it the advertised one instead, and
+/// this is the test that stops it being deleted as redundant — which it looks
+/// like, and which it was, right up until it wasn't.
+///
+/// Deliberately driven from `examples/fleet-drifted.toml` and the same burst
+/// parameters the regen script passes, not from a synthetic fixture: the
+/// claim is about the committed files, so the test should exercise what
+/// produces them.
+#[test]
+fn every_writer_that_feeds_results_emits_sorted_keys() {
+    fn keys_are_sorted(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                let keys: Vec<&String> = map.keys().collect();
+                keys.windows(2).all(|w| w[0] <= w[1]) && map.values().all(keys_are_sorted)
+            }
+            serde_json::Value::Array(items) => items.iter().all(keys_are_sorted),
+            _ => true,
+        }
+    }
+
+    // results/deterministic/anonymity-drifted.json
+    let fleet =
+        occultation::anonymity::Fleet::load(std::path::Path::new("examples/fleet-drifted.toml"))
+            .expect("the committed drifted fleet loads");
+    let anonymity = occultation::anonymity::partition(&fleet).expect("the fleet partitions");
+    assert!(
+        keys_are_sorted(&anonymity.to_json()),
+        "AnonymityReport::to_json is not sorted; results/deterministic/ \
+         would change bytes on any host whose dependency graph differs"
+    );
+
+    // results/deterministic/pool-burst-5000.json, the regen script's own
+    // parameters.
+    let burst = simulate_burst(&BurstConfig {
+        burst_rate_hz: 5000.0,
+        duration: Duration::from_secs(2),
+        capacity: 64,
+        refill_cost: Duration::from_micros(700),
+        online_cost: Duration::from_micros(60),
+        seed: 7,
+    })
+    .expect("the regen script's burst parameters simulate");
+    assert!(
+        keys_are_sorted(&burst.to_json()),
+        "BurstReport::to_json is not sorted"
+    );
+
+    // results/measured/. Not diffed by CI — wall-clock timing cannot be —
+    // but held to the same rule, because "our output does not depend on a
+    // transitive dependency's feature flags" is not a property worth having
+    // in half the files.
+    let costs = run_bench(&BenchOptions {
+        iters: 1,
+        ..Default::default()
+    })
+    .expect("a one-iteration bench runs");
+    assert!(
+        keys_are_sorted(&composed_report(&costs).to_json()),
+        "ComposedReport::to_json is not sorted"
+    );
+
+    // The non-vacuity check, mirroring `report.rs`'s own. If insertion order
+    // does not survive in this build, every assertion above is true for free.
+    let out_of_order = serde_json::json!({ "b": 1, "a": 2 });
+    let preserve_order_active = out_of_order
+        .as_object()
+        .expect("an object")
+        .keys()
+        .next()
+        .map(String::as_str)
+        == Some("b");
+    if !preserve_order_active {
+        // Not a failure — it is the regime this crate used to be in, and the
+        // sort is still correct. But the assertions above proved nothing
+        // about it, and that should be visible rather than assumed.
+        eprintln!(
+            "note: serde_json is compiled without `preserve_order`, so every \
+             object sorts itself and this test cannot distinguish a working \
+             canonical_json from a missing one. Check `cargo tree -e features` \
+             before trusting it."
+        );
+    }
+}
