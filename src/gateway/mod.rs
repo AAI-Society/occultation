@@ -9,6 +9,7 @@
 //! `panic = "abort"` to any profile in `Cargo.toml` turns a hook panic into
 //! a process abort and silently voids this entire guarantee.
 
+pub mod collateral;
 pub mod config;
 pub mod proxy;
 pub mod source;
