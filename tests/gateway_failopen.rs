@@ -542,9 +542,16 @@ const ALL_FAULTS: [Fault; 8] = [
 /// service future resolves**, so anything slow in the hook is
 /// time-to-first-byte the client pays, even though the hook runs after the
 /// forward. If that ever stopped being true, moving collateral fetches off
-/// the request path would be unnecessary — and if the hook were ever moved
-/// back ahead of the forward, or the response written before the hook ran,
-/// this assertion is what notices.
+/// the request path would be unnecessary.
+///
+/// Be precise about what this assertion does and does not catch. It
+/// distinguishes *a hook awaited on the service future* from *a hook running
+/// off it* — spawn the hook, or write the response before it finishes, and
+/// `elapsed` collapses to sub-millisecond and this fails. It says nothing
+/// about the hook's **ordering** relative to the forward: a hook moved back
+/// ahead of the forward, but still awaited inline, costs the same
+/// `elapsed >= HANG` and passes here unchanged. That ordering is `proxy.rs`'s
+/// property to pin, not this test's.
 ///
 /// **Multi-threaded on purpose**, and the only test here that is. On a
 /// current-thread runtime `HangingVerifier`'s `thread::sleep` blocks the one
