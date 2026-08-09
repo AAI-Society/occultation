@@ -48,12 +48,22 @@ pub trait AttestationSource: Send + Sync {
 /// nothing ties the quote to the TLS session it arrived on, so a quote
 /// captured once can be replayed forever. `RaTlsSource` in phase 1b is the
 /// answer; until then the gateway reports the gap.
+///
+/// A request carrying the header twice is read via `HeaderMap::get`, which
+/// returns only the first value; the gateway measures that one while the
+/// full, unmodified set still reaches the upstream. Phase 1 only measures,
+/// so an unmeasured duplicate is not a defect here — but it is a choice, and
+/// phase 1b should not inherit it without re-examining it.
 pub struct HeaderSource {
     header: String,
 }
 
 impl HeaderSource {
     pub fn new(header: &str) -> Self {
+        // Canonicalizes the stored name for logging and comparison. It is
+        // *not* what makes lookup case-insensitive — `HeaderMap` normalizes
+        // on insert and hashes lookups through a lowercasing table, so
+        // `extract` would match either way.
         HeaderSource {
             header: header.to_ascii_lowercase(),
         }
@@ -130,9 +140,11 @@ mod tests {
     #[test]
     fn undecodable_base64_is_an_error_not_a_panic() {
         let s = HeaderSource::new("x-attestation");
-        assert!(s
-            .extract(&head_with(Some(("x-attestation", "not!base64"))))
-            .is_err());
+        assert!(matches!(
+            s.extract(&head_with(Some(("x-attestation", "not!base64"))))
+                .unwrap_err(),
+            SourceError::NotBase64(_)
+        ));
     }
 
     #[test]
@@ -149,7 +161,10 @@ mod tests {
             path_and_query: "/".to_string(),
             headers,
         };
-        assert!(s.extract(&head).is_err());
+        assert!(matches!(
+            s.extract(&head).unwrap_err(),
+            SourceError::NotUtf8
+        ));
     }
 
     #[test]
@@ -158,9 +173,28 @@ mod tests {
         // and decoding it would allocate on an attacker's say-so.
         let s = HeaderSource::new("x-attestation");
         let huge = "A".repeat(MAX_ATTESTATION_B64 + 4);
-        assert!(s
-            .extract(&head_with(Some(("x-attestation", &huge))))
-            .is_err());
+        assert!(matches!(
+            s.extract(&head_with(Some(("x-attestation", &huge))))
+                .unwrap_err(),
+            SourceError::TooLarge { got } if got == MAX_ATTESTATION_B64 + 4
+        ));
+    }
+
+    #[test]
+    fn a_quote_sized_header_is_accepted() {
+        // A real TDX quote is a few KB. The cap must sit above that, not just
+        // above the 8-byte fixture the other tests use.
+        let s = HeaderSource::new("x-attestation");
+        let quote = STANDARD.encode(vec![0u8; 6 * 1024]);
+        assert!(quote.len() < MAX_ATTESTATION_B64);
+        assert_eq!(
+            s.extract(&head_with(Some(("x-attestation", &quote))))
+                .unwrap()
+                .unwrap()
+                .bytes
+                .len(),
+            6 * 1024
+        );
     }
 
     #[test]
@@ -174,15 +208,19 @@ mod tests {
 
     #[test]
     fn the_configured_header_name_matches_case_insensitively() {
-        // Header names are case-insensitive on the wire, and `new` lowercases
-        // what it is given. Pin both directions: a differently-cased
-        // configured name still finds a differently-cased stored header.
-        let configured_mixed = HeaderSource::new("X-Attestation");
-        let stored_lower = head_with(Some(("x-attestation", "aGVsbG8=")));
-        assert!(configured_mixed.extract(&stored_lower).unwrap().is_some());
-
-        let configured_lower = HeaderSource::new("x-attestation");
-        let stored_mixed = head_with(Some(("X-Attestation", "aGVsbG8=")));
-        assert!(configured_lower.extract(&stored_mixed).unwrap().is_some());
+        // The case-insensitivity is HeaderMap's, not `new`'s: `HeaderName`
+        // normalizes on insert and `AsHeaderName::find` hashes through a
+        // lowercasing table. This pins that HeaderSource inherits it, and
+        // that it reads the *configured* name rather than a hardcoded one.
+        let s = HeaderSource::new("X-Custom-Attest");
+        assert!(s
+            .extract(&head_with(Some(("x-custom-attest", "aGVsbG8="))))
+            .unwrap()
+            .is_some());
+        // A different configured name must not match.
+        assert!(HeaderSource::new("x-other")
+            .extract(&head_with(Some(("x-custom-attest", "aGVsbG8="))))
+            .unwrap()
+            .is_none());
     }
 }
