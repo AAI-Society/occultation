@@ -61,6 +61,19 @@ fn canonical_fmspc(fmspc: &str) -> String {
     fmspc.trim().to_ascii_lowercase()
 }
 
+/// Lowercase, zero-padded, big-endian hex — the crate's *only* byte-to-hex
+/// rendering.
+///
+/// [`fmspc_to_hex`] is a thin wrapper over this, and Task 4's verifier
+/// renders TCB report fields (8, 16 and 48 bytes wide, which `fmspc_to_hex`
+/// cannot take) through it directly. Sharing one function rather than one
+/// convention is deliberate: while two renderers agreed only by test, a
+/// reviewer had to check that they still agreed, and swapping one call site
+/// for the other was a silent no-op that no test could distinguish.
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Render a raw FMSPC as the lowercase hex string used as the cache key.
 ///
 /// Public because Task 4's verifier needs the same rendering for
@@ -69,7 +82,7 @@ fn canonical_fmspc(fmspc: &str) -> String {
 /// reintroduce exactly the two-spellings-of-one-platform risk this module
 /// exists to close.
 pub fn fmspc_to_hex(fmspc: &Fmspc) -> String {
-    fmspc.iter().map(|b| format!("{b:02x}")).collect()
+    hex_lower(fmspc)
 }
 
 /// Recover a lock guard even if a prior holder panicked while holding it.

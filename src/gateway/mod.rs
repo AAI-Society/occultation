@@ -13,3 +13,4 @@ pub mod collateral;
 pub mod config;
 pub mod proxy;
 pub mod source;
+pub mod verify;
