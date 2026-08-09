@@ -784,6 +784,87 @@ mod tests {
         }
     }
 
+    /// The other half of Important 1, which no test in `verify.rs` or
+    /// `collateral.rs` can reach: expired collateral must also *schedule the
+    /// refresh that fixes it*.
+    ///
+    /// The verdict and the scheduling are decided in different modules, and
+    /// the defect lived in the join. `pipeline.rs` schedules on `Unverified`
+    /// and deliberately not on `Invalid` — an `Invalid` quote is the agent's
+    /// doing and fetching more collateral for it would point an amplifier at
+    /// the provisioning service. So while expired collateral came back
+    /// `Invalid`, the one thing that would have repaired it was also the one
+    /// thing suppressed, and the misattribution held for the rest of the
+    /// TTL. A unit test of either module alone still passes with that
+    /// behaviour intact.
+    ///
+    /// Uses the real `QuoteVerifier` against the vendored bundle and the
+    /// real clock — the bundle's windows all closed in July 2025, so this is
+    /// exactly the shipped configuration on any machine running it.
+    #[tokio::test]
+    async fn expired_collateral_schedules_the_refresh_that_would_repair_it() {
+        use crate::gateway::collateral::CollateralCache;
+        use std::time::Duration;
+        use tokio::sync::mpsc;
+
+        fn real_tdx_quote() -> Vec<u8> {
+            include_bytes!("../../tests/fixtures/tdx-quote.bin").to_vec()
+        }
+
+        let collateral: dcap_qvl::QuoteCollateralV3 = serde_json::from_slice(include_bytes!(
+            "../../tests/fixtures/tdx-quote-collateral.json"
+        ))
+        .expect("the vendored collateral fixture decodes");
+
+        // Fetched *now*, and a six-hour TTL: by our own TTL this entry is as
+        // fresh as collateral ever gets. Everything below is about the
+        // window the bundle declares for itself.
+        let cache =
+            CollateralCache::new("https://pccs.invalid".into(), Duration::from_secs(6 * 3600));
+        cache.insert_for_test("b0c06f000000", collateral, std::time::Instant::now());
+
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(8);
+        let parts = Parts::new();
+        let pipeline = Pipeline {
+            source: StubSource::new(|| {
+                Ok(Some(RawAttestation {
+                    bytes: real_tdx_quote(),
+                }))
+            }),
+            verifier: Arc::new(QuoteVerifier::new(Arc::new(cache))),
+            meter: Arc::clone(&parts.meter),
+            metrics: Arc::clone(&parts.metrics),
+            sink: Arc::clone(&parts.sink) as Arc<dyn FindingSink>,
+            refresh: crate::gateway::refresh::queue_for_test(tx),
+        };
+        pipeline.measure(&head());
+        drop(pipeline);
+
+        let (rendered, skipped, _) = parts.sink.only();
+        assert!(skipped.is_empty(), "nothing panicked: {skipped:?}");
+        assert!(
+            rendered.contains("UNVERIFIED"),
+            "expired collateral is our refresh gap. Reported as INVALID it \
+             blames every legitimate agent for it, counts them in the metric \
+             an operator watches for hostile ones, and suppresses the \
+             refresh: {rendered}"
+        );
+        assert!(!rendered.contains("INVALID"), "{rendered}");
+
+        let mut scheduled = Vec::new();
+        while let Ok(quote) = rx.try_recv() {
+            scheduled.push(quote);
+        }
+        assert_eq!(
+            scheduled.len(),
+            1,
+            "expired collateral must queue a refresh; without one the wrong \
+             verdict repeats for every request from every agent until our own \
+             TTL runs out"
+        );
+        assert_eq!(scheduled[0], real_tdx_quote());
+    }
+
     /// A source that never yields a quote must never schedule a fetch — there
     /// is nothing to fetch *for*, and the refresher would only parse-fail.
     #[tokio::test]

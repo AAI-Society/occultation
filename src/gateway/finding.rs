@@ -428,15 +428,24 @@ impl WhyKind {
     /// Classify a free-text `why` by keyword, never returning the text
     /// itself. Matched against the exact phrases `verify.rs`'s
     /// `collateral_or_unverified` uses today ("no collateral cached", "past
-    /// its TTL") plus the vocabulary `Task7`'s wiring is expected to use for
-    /// a provisioning-service failure or an unsupported report type. Case
-    /// folded once up front so "PCS unreachable" and "pcs unreachable"
-    /// classify identically.
+    /// its TTL", "validity window it declares") plus the vocabulary `Task7`'s
+    /// wiring is expected to use for a provisioning-service failure or an
+    /// unsupported report type. Case folded once up front so "PCS
+    /// unreachable" and "pcs unreachable" classify identically.
+    ///
+    /// The third of those is a *second* route to `CollateralStale`, and it
+    /// has to be here rather than folded into the TTL keyword: collateral
+    /// past the validity window it declares for itself is stale in exactly
+    /// the sense this bucket means, but the message cannot say "past its
+    /// TTL", because it is not — it is inside the TTL, and an operator sent
+    /// to lengthen one would be fixing the wrong knob. Without this branch
+    /// the reason lands in `Other`, which is the bucket whose whole purpose
+    /// is to signal that the keywords have drifted.
     fn classify(why: &str) -> WhyKind {
         let lower = why.to_ascii_lowercase();
         if lower.contains("no collateral cached") {
             WhyKind::CollateralAbsent
-        } else if lower.contains("past its ttl") {
+        } else if lower.contains("past its ttl") || lower.contains("validity window it declares") {
             WhyKind::CollateralStale
         } else if lower.contains("pcs")
             || lower.contains("pccs")
@@ -1510,6 +1519,7 @@ mod tests {
         for phrase in [
             "no collateral cached",
             "past its TTL",
+            "validity window it declares",
             "the system clock reads before the Unix epoch",
         ] {
             assert!(
@@ -1591,6 +1601,41 @@ mod tests {
             let QuoteVerdict::Unverified { why } = verdict else {
                 panic!("expected Unverified against a stale cache, got {verdict:?}");
             };
+            assert_eq!(WhyKind::classify(&why), WhyKind::CollateralStale);
+        }
+
+        /// The third reason, and the one that arrives with a different
+        /// wording on purpose.
+        ///
+        /// Collateral inside our TTL but past the window it declares for
+        /// itself cannot say "past its TTL" — it is not — so without a
+        /// keyword of its own it lands in `Other`, the bucket whose whole
+        /// job is to signal that the classifier has drifted. A rising
+        /// `why_kind="other"` on a perfectly ordinary collateral cycle is
+        /// exactly the false signal the README tells operators to alert on.
+        #[test]
+        fn collateral_past_its_own_window_classifies_as_collateral_stale() {
+            // Fetched now, six-hour TTL: nowhere near our TTL. The vendored
+            // bundle's windows all closed in July 2025, so the real clock is
+            // past them.
+            let cache =
+                CollateralCache::new("https://pccs.invalid".into(), Duration::from_secs(6 * 3600));
+            cache.insert_for_test(REAL_FMSPC_HEX, real_collateral(), Instant::now());
+            let verifier = QuoteVerifier::new(Arc::new(cache));
+            let verdict = verifier.verify(&RawAttestation {
+                bytes: real_tdx_quote(),
+            });
+            let QuoteVerdict::Unverified { why } = verdict else {
+                panic!(
+                    "collateral past its declared window is our refresh gap, \
+                     not the counterparty's: {verdict:?}"
+                );
+            };
+            assert!(
+                !why.contains("past its TTL"),
+                "the entry is well inside its TTL; saying otherwise sends an \
+                 operator to lengthen a TTL that is not the problem: {why}"
+            );
             assert_eq!(WhyKind::classify(&why), WhyKind::CollateralStale);
         }
     }

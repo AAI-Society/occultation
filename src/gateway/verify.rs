@@ -58,7 +58,9 @@
 //!    three permitted fields, so the report itself is never in scope where
 //!    a verdict is built.
 
-use crate::gateway::collateral::{fmspc_to_hex, hex_lower, CacheLookup, CollateralCache};
+use crate::gateway::collateral::{
+    fmspc_to_hex, hex_lower, CacheLookup, CollateralCache, StaleReason,
+};
 use crate::gateway::source::RawAttestation;
 use dcap_qvl::quote::{EnclaveReport, Report, TDReport10, TDReport15};
 use dcap_qvl::{Fmspc, QuoteCollateralV3};
@@ -170,11 +172,32 @@ fn collateral_or_unverified(
 ) -> Result<Arc<QuoteCollateralV3>, QuoteVerdict> {
     match lookup {
         CacheLookup::Fresh(c) => Ok(c),
-        CacheLookup::Stale { age } => Err(QuoteVerdict::Unverified {
+        CacheLookup::Stale {
+            age,
+            reason: StaleReason::PastOurTtl,
+        } => Err(QuoteVerdict::Unverified {
             why: format!(
                 "collateral for FMSPC {fmspc_hex} is {}s old and past its TTL; \
                  verifying against expired TCB data could report a revoked \
                  platform as up to date",
+                age.as_secs()
+            ),
+        }),
+        // Inside our TTL, past Intel's own window. Reported separately
+        // because it sends an operator somewhere different — no TTL they
+        // could have chosen would have avoided it, only a fresher fetch —
+        // and because the alternative is not `Unverified` with a vaguer
+        // message but `Invalid`: `dcap_qvl` bails with "TCBInfo expired" on
+        // exactly this collateral, and every genuine quote from every
+        // legitimate agent would be filed as the counterparty's fault.
+        CacheLookup::Stale {
+            age,
+            reason: StaleReason::PastDeclaredValidity { next_update },
+        } => Err(QuoteVerdict::Unverified {
+            why: format!(
+                "collateral for FMSPC {fmspc_hex} is {}s old, within its TTL, but \
+                 past the validity window it declares (nextUpdate {next_update}); \
+                 this is our refresh gap and not the counterparty's",
                 age.as_secs()
             ),
         }),
@@ -317,11 +340,10 @@ impl QuoteVerifier {
         };
         let fmspc_hex = fmspc_to_hex(&fmspc);
 
-        let collateral = match collateral_or_unverified(self.cache.get(&fmspc), &fmspc_hex) {
-            Ok(c) => c,
-            Err(verdict) => return verdict,
-        };
-
+        // Read before the lookup, not after it: the cache measures the
+        // collateral's own declared validity against this same clock, so
+        // there is no ordering in which it could be consulted with one
+        // reading and `dcap_qvl` called with another.
         let Some(now_secs) = now_secs else {
             return QuoteVerdict::Unverified {
                 why: "the system clock reads before the Unix epoch, so collateral \
@@ -329,6 +351,12 @@ impl QuoteVerifier {
                     .to_string(),
             };
         };
+
+        let collateral =
+            match collateral_or_unverified(self.cache.get(&fmspc, now_secs), &fmspc_hex) {
+                Ok(c) => c,
+                Err(verdict) => return verdict,
+            };
 
         match dcap_qvl::verify::verify(&raw.bytes, &collateral, now_secs) {
             Err(e) => QuoteVerdict::Invalid {
@@ -820,22 +848,97 @@ mod tests {
         }
     }
 
-    /// Fresh collateral must actually reach `dcap_qvl::verify::verify`. With
-    /// a clock outside the bundle's validity window the chain check fails,
-    /// and that failure has to surface as `Invalid` — a verifier that
-    /// returned `Unverified` here would be indistinguishable from one that
-    /// never called the verifier at all.
+    /// Fresh collateral must actually reach `dcap_qvl::verify::verify`, and
+    /// a chain that fails for a reason the counterparty *is* responsible for
+    /// has to surface as `Invalid` — a verifier that returned `Unverified`
+    /// here would be indistinguishable from one that never called the
+    /// verifier at all.
+    ///
+    /// Tampering rather than a clock outside the window, which is what this
+    /// test used to do. An out-of-window clock is now caught one layer
+    /// earlier, by the cache, and reported as `Unverified` on purpose (see
+    /// `expired_collateral_is_our_gap_and_never_the_agents_fault`), so a
+    /// clock is no longer a way to reach the verifier's error path at all.
+    /// A flipped byte in the ECDSA signature over the report is, and it is
+    /// unambiguously the agent's fault.
     #[test]
     fn fresh_collateral_reaches_the_verifier_and_a_failed_chain_is_invalid() {
+        let mut tampered = real_tdx_quote();
+        tampered[640] ^= 0xff;
         let verdict = verifier_with_fresh_collateral().verify_at(
-            &RawAttestation {
-                bytes: real_tdx_quote(),
-            },
-            Some(NOW_INSIDE_COLLATERAL_WINDOW + 400 * 24 * 3600),
+            &RawAttestation { bytes: tampered },
+            Some(NOW_INSIDE_COLLATERAL_WINDOW),
         );
         match verdict {
             QuoteVerdict::Invalid { reason } => assert!(!reason.is_empty()),
-            other => panic!("an expired chain must be Invalid, got {other:?}"),
+            other => panic!("a forged signature must be Invalid, got {other:?}"),
+        }
+    }
+
+    /// Expired collateral is our refresh gap, and blaming the counterparty
+    /// for it is the failure this test exists to prevent.
+    ///
+    /// The setup is the one that shipped: a six-hour TTL, collateral fetched
+    /// a moment ago, and a clock one second past the window the bundle
+    /// declares. Every element of that is deliberate — the entry is
+    /// comfortably inside our own TTL, so nothing about our configuration is
+    /// wrong, and the quote is the genuine vendored one, so nothing about
+    /// the counterparty is wrong either.
+    ///
+    /// Before the cache read the declared window, this returned `Invalid`
+    /// with `TCBInfo expired`: the agent blamed for our stale cache, counted
+    /// in `gateway_requests_total{verdict="invalid"}`, and — because
+    /// `pipeline.rs` schedules a refresh on `Unverified` only — no refresh
+    /// scheduled to fix it, so it repeated for every request from every
+    /// agent until our own TTL ran out. The control below is what makes the
+    /// difference legible: one second earlier, the same quote against the
+    /// same collateral genuinely verifies.
+    #[test]
+    fn expired_collateral_is_our_gap_and_never_the_agents_fault() {
+        // 2025-07-19T10:00:35Z — the vendored bundle's PCK CRL `nextUpdate`,
+        // which is the *earliest* of the four windows `declared_expiry`
+        // reads and so the one that binds. Pinned in collateral.rs too,
+        // against the fixture itself. The first draft of this test used the
+        // TCB info's window instead, 928 seconds later, and the control
+        // below failed: at that clock `dcap_qvl` has already rejected the
+        // chain over the expired CRL, which is how the CRLs came to be read
+        // at all.
+        const DECLARED_NEXT_UPDATE: u64 = 1_752_919_235;
+
+        let cache =
+            CollateralCache::new("https://pccs.invalid".into(), Duration::from_secs(6 * 3600));
+        cache.insert_for_test(
+            &fmspc_to_hex(&fmspc_of_real_quote()),
+            real_collateral(),
+            Instant::now(),
+        );
+        let verifier = QuoteVerifier::new(Arc::new(cache));
+        let quote = || RawAttestation {
+            bytes: real_tdx_quote(),
+        };
+
+        // The control. Without it, every assertion below would hold for a
+        // verifier that never verifies anything.
+        let inside = verifier.verify_at(&quote(), Some(DECLARED_NEXT_UPDATE - 1));
+        assert!(
+            matches!(inside, QuoteVerdict::Verified { .. }),
+            "one second before the earliest declared window this quote must \
+             still verify, or the refusal below is not about expiry: {inside:?}"
+        );
+
+        let outside = verifier.verify_at(&quote(), Some(DECLARED_NEXT_UPDATE));
+        match outside {
+            QuoteVerdict::Unverified { why } => {
+                assert!(why.contains("validity window it declares"), "{why}");
+                assert!(why.contains(REAL_FMSPC_HEX), "{why}");
+            }
+            QuoteVerdict::Invalid { reason } => panic!(
+                "expired collateral was reported as the counterparty's fault \
+                 ({reason}). Every genuine quote from every legitimate agent is \
+                 now INVALID, counted against them, and no refresh is scheduled \
+                 to fix it"
+            ),
+            other => panic!("expected Unverified, got {other:?}"),
         }
     }
 
@@ -858,6 +961,7 @@ mod tests {
         let stale = collateral_or_unverified(
             CacheLookup::Stale {
                 age: Duration::from_secs(900),
+                reason: StaleReason::PastOurTtl,
             },
             REAL_FMSPC_HEX,
         )
@@ -869,6 +973,37 @@ mod tests {
                 assert!(why.contains(REAL_FMSPC_HEX), "{why}");
             }
             other => panic!("Stale must be Unverified, not {other:?}"),
+        }
+
+        // The other stale reason, which must not be reported as the first:
+        // an operator told "past its TTL" for collateral that is nowhere
+        // near their TTL will go and lengthen a TTL that was never the
+        // problem, and the misattribution will carry on.
+        let expired = collateral_or_unverified(
+            CacheLookup::Stale {
+                age: Duration::from_secs(900),
+                reason: StaleReason::PastDeclaredValidity {
+                    next_update: 1_752_920_163,
+                },
+            },
+            REAL_FMSPC_HEX,
+        )
+        .expect_err("collateral past its own window cannot yield collateral");
+        match &expired {
+            QuoteVerdict::Unverified { why } => {
+                assert!(why.contains("within its TTL"), "{why}");
+                assert!(why.contains("validity window it declares"), "{why}");
+                assert!(
+                    why.contains("1752920163"),
+                    "the window must be named: {why}"
+                );
+                assert!(why.contains(REAL_FMSPC_HEX), "{why}");
+                assert!(
+                    !why.contains("past its TTL"),
+                    "this is not a TTL problem and must not be reported as one: {why}"
+                );
+            }
+            other => panic!("an expired window must be Unverified, not {other:?}"),
         }
 
         // And Fresh is the only arm that hands back collateral at all.
