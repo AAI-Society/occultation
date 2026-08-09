@@ -29,7 +29,15 @@
 //! (Those bytes are invented. The fixture's real identifier is not written
 //! anywhere in this crate, including in comments — it is recoverable from
 //! the committed sample quote by anyone who needs it, but writing it down
-//! is the exact habit this module exists to refuse.)
+//! is the exact habit this module exists to refuse. That sentence used to
+//! be a promise; two comments in this file's own test module broke it, in
+//! decimal. It is now a *test*:
+//! `a_real_verified_report_leaks_none_of_its_hardware_identifier` sweeps
+//! every `.rs` file in the crate for the real bytes. Be exact about the
+//! reach, since the previous version of this paragraph was not — the sweep
+//! catches two or more consecutive bytes in decimal and a hex prefix; a
+//! *single* byte written on its own is beyond what any lexical needle can
+//! distinguish from an ordinary number, and remains a matter of care.)
 //!
 //! Five guards, because no one of them is sufficient:
 //!
@@ -722,8 +730,10 @@ mod tests {
         // Redundant against `debug_form` at first glance — squeezed, that is
         // this string wrapped in brackets — but deliberately kept unbracketed:
         // pretty `Debug` emits a *trailing comma* before its closing bracket,
-        // so `[129,…,253]` does not occur in a `{:#?}` dump while `129,…,253`
-        // still does.
+        // so `[7,…,42]` does not occur in a `{:#?}` dump while `7,…,42` still
+        // does. (Those digits are invented, per this module's header: the
+        // fixture's real bytes are not written down here, and an earlier
+        // version of this comment used the first two of them.)
         let joined = bytes
             .iter()
             .map(|b| b.to_string())
@@ -740,7 +750,7 @@ mod tests {
         // not enough on its own: once a pretty `Debug` dump is *inside* a
         // string field, both `serde_json` and `Debug for str` escape its
         // newlines into the two literal characters `\` and `n`, which are not
-        // whitespace and so survive the strip — leaving `[\n129,\n29,…` and
+        // whitespace and so survive the strip — leaving `[\n7,\n11,…` and
         // matching none of the needles. The escape pairs are removed first.
         fn squeeze(s: &str) -> String {
             s.replace("\\n", "")
@@ -751,6 +761,41 @@ mod tests {
                 .collect()
         }
         let rendered = squeeze(&rendered);
+
+        // The module header's claim, tested rather than asserted in prose:
+        // "the fixture's real identifier is not written anywhere in this
+        // crate, including in comments". That claim was false when it was
+        // written — two comments below carried the first bytes of it, in
+        // decimal — and it is the fourth guard on this branch that its own
+        // documentation broke. Prose is not enforceable; this is.
+        //
+        // Two spellings, because a comment quoting the identifier writes it
+        // either as the hex `serde_json` produces or as the decimal `Debug`
+        // does. Whitespace is squeezed out of the source first, so a needle
+        // wrapped across lines or split by a `//` prefix still matches —
+        // which is exactly how the decimal one appeared.
+        let source = squeezed_crate_source();
+        // Two bytes, not more: the occurrence this replaces wrote exactly
+        // two. One byte is not a needle — every three-digit number in the
+        // crate would match it — so a *single* byte of the identifier in a
+        // comment remains beyond what any lexical guard can see, and the
+        // module header says so rather than claiming otherwise.
+        let decimal_prefix = bytes
+            .iter()
+            .take(2)
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let hex_prefix: String = lower.chars().take(8).collect();
+        for (shape, needle) in [("decimal", &decimal_prefix), ("hex", &hex_prefix)] {
+            assert!(
+                !source.contains(needle),
+                "the fixture's real hardware identifier is written into this \
+                 crate's source as {shape}. The module header says it is not, \
+                 and a guard whose own documentation breaks it is the shape of \
+                 defect this branch has now found four times"
+            );
+        }
 
         // Deliberately does not print the needle or the verdict on failure:
         // a test that leaks the hardware serial into CI logs to complain
@@ -1280,6 +1325,67 @@ mod tests {
     /// descends into `target/`, where the vendored `dcap-qvl` source would
     /// match every pattern here and make all three tests fail permanently.
     const CRATE_ROOTS: [&str; 4] = ["src/", "tests/", "benches/", "examples/"];
+
+    /// Every `.rs` file under [`CRATE_ROOTS`], concatenated with all
+    /// whitespace removed.
+    ///
+    /// Flattened rather than searched line by line because the needle this
+    /// exists for is one a *comment* carries, and a comment wraps. The
+    /// occurrence it was written to catch had a comma, an escaped newline
+    /// and a `//` prefix sitting between the two bytes, so nothing
+    /// line-oriented and nothing that removed only whitespace could see the
+    /// pair. Read through `std::fs` rather than `include_str!` for the same
+    /// reason `grep_crate` shells out: the ban has to cover files this one
+    /// does not name.
+    ///
+    /// This function's own documentation may not quote the bytes it looks
+    /// for, which is not a stylistic preference — the first draft of this
+    /// comment did, and the guard failed on it.
+    fn squeezed_crate_source() -> String {
+        fn walk(dir: &std::path::Path, into: &mut String) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, into);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        // Whitespace, the *escaped* whitespace a string
+                        // literal or a `Debug` dump carries as the two
+                        // characters `\` and `n`, and the comment marker.
+                        // All three sat between the two bytes this exists to
+                        // catch — the occurrence was inside a string, inside
+                        // a comment — so a squeeze that removed only
+                        // whitespace found nothing.
+                        let flattened = text
+                            .replace("\\n", "")
+                            .replace("\\r", "")
+                            .replace("\\t", "");
+                        into.extend(
+                            flattened
+                                .chars()
+                                .filter(|c| !c.is_whitespace() && *c != '/' && *c != '*'),
+                        );
+                        // A separator no needle can span, so two files cannot
+                        // be concatenated into a match neither contains.
+                        into.push('\u{0}');
+                    }
+                }
+            }
+        }
+        let mut out = String::new();
+        for root in CRATE_ROOTS {
+            walk(std::path::Path::new(root), &mut out);
+        }
+        assert!(
+            out.contains("fnsqueezed_crate_source"),
+            "the source sweep did not read this file, so every ban built on \
+             it would pass vacuously"
+        );
+        out
+    }
 
     /// Grep the crate for `pattern`, returning the matching lines.
     ///
