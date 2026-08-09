@@ -313,6 +313,54 @@ fn recover<T>(result: Result<T, PoisonError<T>>) -> T {
     })
 }
 
+/// The shortest collateral TTL this gateway will start with.
+///
+/// The same shape of floor as `refresh::MIN_SALT_ROTATION`, and for the same
+/// reason: `--collateral-ttl 0s` starts cleanly and produces a gateway that
+/// reports `Unverified` for every quote from every platform, forever, with
+/// no startup error and nothing in the log to distinguish it from a
+/// provisioning service that is simply unreachable. Every entry is stale the
+/// instant after it is written, so the refresher fetches, caches, and the
+/// next request finds the entry already expired.
+///
+/// One minute, and the argument for it is narrow. It is not a
+/// recommendation — six hours is the default and Intel's own windows are
+/// measured in days — it is the shortest interval in which a fetched entry
+/// can serve *any* request at all, given that a refresh costs a round trip
+/// to a provisioning service and `refresh::RETRY_AFTER` is itself sixty
+/// seconds. Below it, the cooldown alone guarantees the cache is empty more
+/// often than it is full.
+pub const MIN_COLLATERAL_TTL: Duration = Duration::from_secs(60);
+
+/// A collateral TTL short enough that nothing ever verifies.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a collateral TTL of {}ms is shorter than the {}ms minimum; every cached \
+     entry would be stale before the next request reached it and the gateway \
+     would report Unverified for every quote, forever",
+    .ttl.as_millis(),
+    .minimum.as_millis()
+)]
+pub struct CollateralTtlTooShort {
+    pub ttl: Duration,
+    pub minimum: Duration,
+}
+
+/// Refuse a collateral TTL that would make every verdict `Unverified`.
+///
+/// `refresh::validate_rotation`'s twin, and called from the same place: a
+/// configuration mistake that would make the tool useless is a startup
+/// failure, where an operator reads it, rather than a discovery.
+pub fn validate_ttl(ttl: Duration) -> Result<(), CollateralTtlTooShort> {
+    if ttl < MIN_COLLATERAL_TTL {
+        return Err(CollateralTtlTooShort {
+            ttl,
+            minimum: MIN_COLLATERAL_TTL,
+        });
+    }
+    Ok(())
+}
+
 /// Collateral, fetched off the request path and cached by FMSPC.
 ///
 /// `dcap_qvl::verify::verify` is synchronous and takes collateral as an
@@ -841,6 +889,45 @@ mod tests {
             CacheLookup::Stale { reason, .. } => assert_eq!(reason, StaleReason::PastOurTtl),
             other => panic!("expected Stale, got {other:?}"),
         }
+    }
+
+    /// The floor, at its boundary and against literals as well as against
+    /// the constant — three assertions phrased only in terms of
+    /// `MIN_COLLATERAL_TTL` hold for any value of it and would let the floor
+    /// drift anywhere. `refresh.rs`'s rotation floor is pinned the same way,
+    /// for the reason recorded there.
+    #[test]
+    fn a_collateral_ttl_that_expires_every_entry_on_arrival_is_refused() {
+        assert!(validate_ttl(Duration::ZERO).is_err());
+        assert!(validate_ttl(Duration::from_secs(59)).is_err());
+        assert!(validate_ttl(Duration::from_secs(60)).is_ok());
+        assert!(validate_ttl(Duration::from_secs(6 * 3600)).is_ok());
+        assert!(
+            validate_ttl(MIN_COLLATERAL_TTL - Duration::from_nanos(1)).is_err(),
+            "one tick under the floor is still under it"
+        );
+
+        // The operator reads this and has to be able to act on it.
+        let rendered = validate_ttl(Duration::ZERO)
+            .expect_err("zero is under the floor")
+            .to_string();
+        assert!(
+            rendered.contains("Unverified for every quote"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("0ms"), "{rendered}");
+        assert!(rendered.contains("60000ms minimum"), "{rendered}");
+
+        // And the harm, demonstrated rather than described: at a zero TTL an
+        // entry written now is already stale by the time anything reads it,
+        // so the cache can never serve a single request.
+        let c = CollateralCache::new("https://pccs.invalid".into(), Duration::ZERO);
+        let t0 = Instant::now();
+        c.insert_for_test(&fmspc_to_hex(&SAMPLE_FMSPC), real_collateral(), t0);
+        assert!(matches!(
+            c.lookup_at(&SAMPLE_FMSPC, t0 + Duration::from_nanos(1), 0),
+            CacheLookup::Stale { .. }
+        ));
     }
 
     #[test]

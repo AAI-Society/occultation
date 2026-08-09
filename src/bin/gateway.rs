@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use occultation::gateway::collateral::CollateralCache;
+use occultation::gateway::collateral::{self, CollateralCache};
 use occultation::gateway::config::GatewayConfig;
 use occultation::gateway::finding::Metrics;
 use occultation::gateway::meter::LinkabilityMeter;
@@ -130,6 +130,7 @@ async fn main() -> Result<()> {
     // value that would take their API down at startup, not from whoever
     // notices the outage.
     proxy::validate_header_read_timeout(cli.header_read_timeout.into())?;
+    collateral::validate_ttl(cli.collateral_ttl.into())?;
     let cfg = GatewayConfig {
         listen: cli.listen,
         upstream: cli.upstream,
@@ -363,6 +364,65 @@ mod tests {
             .parse()
             .expect("the default metrics address parses");
         assert!(addr.ip().is_loopback(), "{addr} is not loopback");
+    }
+
+    /// Two more configuration values that start cleanly and produce a
+    /// useless gateway, checked at the one place an operator finds out in
+    /// time.
+    ///
+    /// `--collateral-ttl 0s` yields a gateway reporting `Unverified` for
+    /// every quote forever, indistinguishable in the log from an unreachable
+    /// provisioning service. `--header-read-timeout 0s` closes every
+    /// connection on arrival, which is the fronted API down — the outage the
+    /// timeout exists to prevent, reached from the other side.
+    ///
+    /// Source-checked for the same reason
+    /// `an_unusable_attestation_header_is_refused_at_startup` is, and with
+    /// the same acknowledged weakness: a validator returning `Result<(), _>`
+    /// that `main` may simply not call has no type-level hold on being
+    /// called. `refresh::spawn` is the strong form and neither of these can
+    /// take it — there is no value they produce that `main` has to consume.
+    /// `proxy::run` and `CollateralCache` clamp what they can independently;
+    /// this is the half that reaches the operator.
+    #[test]
+    fn a_zero_collateral_ttl_or_header_read_timeout_is_refused_at_startup() {
+        let src = include_str!("gateway.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("fn main"),
+            "the scanned region does not reach main"
+        );
+        assert!(
+            non_test
+                .contains("proxy::validate_header_read_timeout(cli.header_read_timeout.into())?"),
+            "main no longer refuses a header-read timeout that would close \
+             every connection on arrival"
+        );
+        assert!(
+            non_test.contains("collateral::validate_ttl(cli.collateral_ttl.into())?"),
+            "main no longer refuses a collateral TTL that would report \
+             Unverified for every quote forever"
+        );
+        // Both are checked before anything is bound or spawned, so an
+        // operator gets the error instead of a running, useless gateway.
+        let ttl_check = non_test
+            .find("collateral::validate_ttl")
+            .expect("the ttl check is present");
+        for later in [
+            "scrape::bind(",
+            "refresh::spawn(",
+            "TcpListener",
+            "serve(cfg",
+        ] {
+            if let Some(at) = non_test.find(later) {
+                assert!(
+                    ttl_check < at,
+                    "the startup checks run after `{later}`, so a bad value \
+                     stands something up before it is caught"
+                );
+            }
+        }
     }
 
     /// A header name no request could ever carry produces a gateway that

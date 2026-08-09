@@ -222,6 +222,9 @@ impl Finding {
                 "VERIFIED",
                 format!("{}, TCB {tcb_status}", platform_display(platform)),
             ),
+            // `advisories` is rendered below rather than here: the first line
+            // is a fixed shape three tests assert exactly, and an advisory
+            // list is unbounded.
             QuoteVerdict::Unverified { why } => {
                 ("agent forwarded (fail-open)", "UNVERIFIED", why.clone())
             }
@@ -231,6 +234,24 @@ impl Finding {
         };
 
         let mut out = format!("{prefix}   quote: {verdict_word} ({parenthetical})\n");
+
+        // The *why* behind a TCB status, which the spec asks findings to
+        // report and which reached `Finding` and stopped there. A status of
+        // `OutOfDate` or `SWHardeningNeeded` with no advisory beside it tells
+        // an operator that something is wrong and nothing about what: the
+        // advisory IDs are the only part of a verified report that says which
+        // erratum, and they come straight out of Intel's TCB level.
+        //
+        // Rendered only when non-empty, so an `UpToDate` platform — which
+        // carries none — does not gain a line saying "none" on every finding.
+        // They are values from Intel's own vocabulary rather than free text
+        // an agent controls, but they are still unbounded in count, which is
+        // why they render here and never reach a metric label.
+        if let QuoteVerdict::Verified { advisories, .. } = &self.verdict {
+            if !advisories.is_empty() {
+                let _ = writeln!(out, "  advisories        {}", advisories.join(", "));
+            }
+        }
 
         // Gated on **both** the `Option` and the verdict, not either alone:
         // an `Unverified` or `Invalid` finding has no trustworthy
@@ -340,12 +361,25 @@ impl EncodeLabelValue for VerdictKind {
 /// The `platform` label on `gateway_quotes_total`.
 ///
 /// [`Platform`] itself, not a local mirror: it now derives `Hash` (see
-/// `verify.rs`), so reusing it directly here means there is exactly one
-/// three-variant enum and one place its Prometheus rendering is written,
-/// instead of two independent copies (this one, plus `verify.rs`'s serde
-/// rename) that agree only because someone hand-kept them in sync. This
-/// `match` is exhaustive for the same reason every other mapping here is —
-/// a fourth `Platform` variant fails this `impl`'s build.
+/// `verify.rs`), so there is exactly one three-variant enum rather than two
+/// kept in sync by hand.
+///
+/// Be exact about what that bought, because the previous version of this
+/// comment was not. It did **not** reduce the renderings of a `Platform` to
+/// one: there are three — `verify.rs`'s `#[serde(rename_all)]`, this
+/// hand-written `EncodeLabelValue`, and `platform_display`'s operator prose
+/// — and they are deliberately separate, because a Prometheus label, a JSON
+/// field and the words "TDX 1.0" are three different jobs. Each is pinned
+/// independently (`each_platform_variant_renders_its_own_distinct_label`
+/// here, `a_verified_finding_states_the_exact_first_line_per_platform` for
+/// the prose).
+///
+/// What reuse eliminated is a whole *class* of defect rather than a copy: a
+/// mirror enum can be mis-mapped, so that `Platform::TdxV15` arrives here
+/// and leaves as `tdx_v10`. With one enum there is no mapping between
+/// platform types to get wrong — only renderings of the single type, and
+/// this `match` is exhaustive, so a fourth variant fails this `impl`'s build
+/// rather than falling through to a default label.
 impl EncodeLabelValue for Platform {
     fn encode(&self, encoder: &mut LabelValueEncoder) -> Result<(), std::fmt::Error> {
         let s: &str = match self {
@@ -922,6 +956,56 @@ mod tests {
         let out = f.render();
         assert!(!out.contains("anonymity set"), "{out}");
         assert!(!out.contains("varying"), "{out}");
+    }
+
+    /// The spec asks that a finding be able to report *why* a TCB is stale,
+    /// and `advisories` reached `Finding` and went no further — half-shipped
+    /// since Task 6.
+    ///
+    /// Both directions, because either alone is satisfiable by the wrong
+    /// renderer: a line that always prints puts "advisories none" on every
+    /// `UpToDate` finding, and one that never prints passes any test that
+    /// only checks an `UpToDate` platform. Asserted against the real
+    /// `INTEL-SA-…` spelling `dcap_qvl` hands over, not a placeholder.
+    #[test]
+    fn a_verified_finding_reports_the_advisories_behind_its_tcb_status() {
+        let with_advisories = Finding {
+            verdict: QuoteVerdict::Verified {
+                platform: Platform::TdxV10,
+                tcb_status: "OutOfDate".into(),
+                advisories: vec!["INTEL-SA-00615".into(), "INTEL-SA-00657".into()],
+                config: TcbConfig::for_test(&[]),
+            },
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        let out = with_advisories.render();
+        assert!(out.contains("advisories"), "{out}");
+        assert!(out.contains("INTEL-SA-00615"), "{out}");
+        assert!(
+            out.contains("INTEL-SA-00657"),
+            "every advisory, not just the first: {out}"
+        );
+        // On its own line, like every other field. A status word an operator
+        // has to hunt for inside the first line is the failure
+        // `a_modelled_row_renders_the_word_modelled_on_its_own_line` names.
+        assert!(
+            out.lines()
+                .any(|l| l.trim_start().starts_with("advisories")),
+            "{out}"
+        );
+
+        let none = Finding {
+            verdict: verified(), // UpToDate, no advisories
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        assert!(
+            !none.render().contains("advisories"),
+            "an up-to-date platform carries no advisories, and a line saying \
+             so on every finding is a line an operator stops reading: {}",
+            none.render()
+        );
     }
 
     #[test]

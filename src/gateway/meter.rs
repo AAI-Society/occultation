@@ -595,6 +595,15 @@ mod tests {
     /// alike without needing to enumerate them. If a debug rendering is
     /// ever genuinely needed here, prove by test that it excludes `salt`
     /// and every stored key rather than relaxing this.
+    ///
+    /// The banned list is the one `verify.rs`, `refresh.rs`, `scrape.rs` and
+    /// `pipeline.rs` all carry, rather than the `?}` this used to ban alone.
+    /// The module that *holds the salt* had the weakest of the five guards:
+    /// `dbg!(&s.salt)` writes it to stderr, contains no `?}`, and passed
+    /// here while failing in all four of its siblings. The tail check is
+    /// theirs too, and for the same reason — `split(..).next()` discards
+    /// everything after the test module as silently as it discards a
+    /// truncated head.
     #[test]
     fn nothing_in_the_non_test_module_reaches_a_debug_formatter() {
         let src = include_str!("meter.rs");
@@ -610,10 +619,31 @@ mod tests {
             "the scanned region does not reach the implementation, so this \
              guard would pass against a truncated string"
         );
-        let tail_marker = "?}";
-        assert!(
-            !non_test.contains(tail_marker),
-            "a Debug-style format spec appears in this module's non-test code"
+        let tail = src.split(MARKER).nth(1).expect("split yields a tail");
+        let after_test_module: Vec<&str> = tail
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with(char::is_whitespace))
+            .collect();
+        assert_eq!(
+            after_test_module,
+            ["}"],
+            "code appears after the test module, where this guard cannot see it"
         );
+        assert!(
+            !non_test.contains("/*"),
+            "block comments would let banned code hide from this guard"
+        );
+        let code: String = non_test
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in ["?}", ":?", "println!", "eprintln!", "dbg!"] {
+            assert!(
+                !code.contains(banned),
+                "`{banned}` appears in the non-test code of the module that \
+                 holds the salt"
+            );
+        }
     }
 }

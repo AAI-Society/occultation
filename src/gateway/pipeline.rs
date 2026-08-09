@@ -21,6 +21,20 @@
 //! review, applied to a pipeline: the entrance is guarded by Task 1, and the
 //! body has to be guarded too.
 //!
+//! What "every stage" means is every call into something this module does
+//! not own — the five trait objects on [`Pipeline`], each of which a
+//! composition root chooses and none of which this module can vouch for.
+//! There is exactly one statement in [`Pipeline::measure`] outside a guard,
+//! `self.refresh.schedule(..)`, and it is outside one because there is
+//! nothing there to guard: [`RefreshQueue`] is a concrete type, not a trait
+//! object, so no caller can substitute anything into it, and `schedule` is a
+//! `try_send` into a bounded channel followed by a `debug!` — no allocation
+//! that can fail, no unwrap, no user code. `refresh.rs`'s
+//! `scheduling_past_the_queue_depth_drops_rather_than_blocks` and
+//! `scheduling_into_a_dropped_refresher_is_a_no_op` pin the two states that
+//! could plausibly have made it panic, a full queue and a closed one.
+//! Wrapping it would add a branch no test in this crate could ever reach.
+//!
 //! `measure` therefore returns `()`. There is nothing for a caller to handle,
 //! because by construction nothing here can fail in a way a caller could act
 //! on — the request was forwarded before this code ran at all.

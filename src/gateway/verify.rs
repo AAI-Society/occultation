@@ -694,7 +694,22 @@ mod tests {
             serde_json::Value::Array(_) => {
                 serde_json::from_value(field.clone()).expect("the identifier is a byte array")
             }
-            other => panic!("unexpected hardware identifier encoding: {other}"),
+            // The *variant name*, never the value. Every other arm here is
+            // handling the hardware identifier, so a panic message that
+            // interpolated `other` would print whatever upstream had changed
+            // the encoding to — which is the identifier, in whatever shape
+            // this arm did not expect, straight into a CI log.
+            other => panic!(
+                "unexpected hardware identifier encoding: a JSON {}",
+                match other {
+                    serde_json::Value::Null => "null",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Object(_) => "object",
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Array(_) => "array",
+                }
+            ),
         };
         assert!(
             !bytes.is_empty(),
