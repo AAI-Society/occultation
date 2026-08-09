@@ -4,6 +4,7 @@ use hyper::body::{Bytes, Incoming};
 use hyper::{Request, Response};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -100,13 +101,110 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use std::sync::OnceLock;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// Cap the request body. A proxy that buffers on an attacker's say-so is a
 /// denial-of-service primitive.
 pub const MAX_REQUEST_BODY: usize = 8 * 1024 * 1024;
+
+/// How long a connection may take to finish sending its request headers.
+///
+/// This is hyper's own default, restated here because hyper's is unreachable
+/// without a timer: `http1::Builder` defaults `h1_header_read_timeout` to
+/// `Some(30s)`, but the check is performed through an installed
+/// `hyper::rt::Timer` and silently degrades to *no timeout at all* when none
+/// is installed. hyper emits a `warn!` about that, and hyper's `tracing`
+/// feature is not enabled here, so the warning is a no-op too. The result is
+/// a header-read timeout that looks configured, is documented upstream as
+/// on-by-default, and does nothing.
+///
+/// What that costs is not theoretical. One socket per connection, one
+/// truncated request line, and nothing sent afterwards, holds a file
+/// descriptor and a task indefinitely: at the process file-descriptor limit
+/// the accept loop then logs `Too many open files` for every subsequent
+/// connection and the fronted API is unreachable until the attacker
+/// disconnects. No attestation, no valid request, and no upstream traffic is
+/// needed. See `a_half_open_connection_is_closed_by_the_header_read_timeout`.
+pub const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The shortest header-read timeout an operator may configure.
+///
+/// Zero is the value that matters: `header_read_timeout(Duration::ZERO)`
+/// closes every connection the instant it arrives, which is the outage this
+/// whole setting exists to prevent, arrived at from the other direction. A
+/// second is the same shape of floor `refresh::MIN_SALT_ROTATION` is — the
+/// smallest value the argument for it actually supports, not a guess about
+/// anyone's network.
+pub const MIN_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How many connections the proxy serves at once.
+///
+/// A bound rather than a rate limit: rate limiting is a stated non-goal, and
+/// this does not refuse anything. Past the cap the accept loop simply stops
+/// accepting, so further connections wait in the kernel's listen backlog and
+/// are served as earlier ones finish. Its job is to keep the process inside
+/// its file-descriptor budget — each proxied connection costs one descriptor
+/// here and one more to the upstream — so that a burst of connections cannot
+/// turn into `accept: Too many open files` for everybody.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
+/// What the accept loop enforces per connection.
+///
+/// Both fields are bounds on *resources*, never on who may talk to the
+/// gateway: nothing here can produce a rejected request. Neither is checked
+/// by this struct — [`serve`] takes them from [`GatewayConfig`] and
+/// `src/bin/gateway.rs` validates the command line, exactly as
+/// `refresh::spawn` validates the rotation interval its own `spawn_with` does
+/// not.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectionLimits {
+    /// Passed to `http1::Builder::header_read_timeout`, with a timer
+    /// installed so that it is actually enforced.
+    pub header_read_timeout: Duration,
+    /// The number of connections served concurrently.
+    pub max_connections: usize,
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        ConnectionLimits {
+            header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+        }
+    }
+}
+
+/// A header-read timeout of zero closes every connection on arrival.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a header-read timeout of {}ms is shorter than the {}ms minimum; the \
+     gateway would close connections before a client could finish sending \
+     its request headers, which is the outage this timeout exists to prevent",
+    .timeout.as_millis(),
+    .minimum.as_millis()
+)]
+pub struct HeaderReadTimeoutTooShort {
+    pub timeout: Duration,
+    pub minimum: Duration,
+}
+
+/// Refuse a header-read timeout short enough to close healthy connections.
+///
+/// The same shape as [`validate_upstream`] and `refresh::validate_rotation`:
+/// a configuration mistake that would take the fronted API down is caught at
+/// startup, where an operator reads the error.
+pub fn validate_header_read_timeout(timeout: Duration) -> Result<(), HeaderReadTimeoutTooShort> {
+    if timeout < MIN_HEADER_READ_TIMEOUT {
+        return Err(HeaderReadTimeoutTooShort {
+            timeout,
+            minimum: MIN_HEADER_READ_TIMEOUT,
+        });
+    }
+    Ok(())
+}
 
 /// A single client, shared across every forwarded request. Cheap to clone in
 /// spirit (it is just a connection pool handle), so it is built once and
@@ -246,8 +344,68 @@ async fn forward(
 /// (the peer resetting mid-request, a malformed HTTP/1.1 stream, ...) is
 /// logged and only ever affects that one connection; the accept loop itself
 /// never stops, because one bad connection must not touch any other.
-async fn run(listener: TcpListener, upstream: hyper::Uri, hooks: Arc<Hooks>) {
+///
+/// # Why the cap cannot become the outage it prevents
+///
+/// A connection refused at the accept loop and a request that fails to
+/// forward are different things, and only the second would break fail-open.
+/// Five properties keep the semaphore on the right side of that line, and
+/// each is here rather than in a design note because each is one edit away
+/// from being false:
+///
+/// 1. The permit is taken **before** `accept()`, so an over-cap connection is
+///    left in the kernel's listen backlog rather than accepted and then
+///    closed. Nothing in this function ever refuses, resets or rejects a
+///    connection; the worst it does is serve one later.
+/// 2. The permit is moved into the connection task and dropped when that task
+///    ends — on a clean close, on a connection error, and on an unwind, since
+///    a panicking task still drops its locals. There is no path that leaks
+///    one, which is what would turn a temporary cap into a permanent one.
+/// 3. [`ConnectionLimits::header_read_timeout`] bounds how long a permit can
+///    be held by a connection that never sends anything, which is what stops
+///    the cap being pinnable by idle sockets. The timeout and the cap are one
+///    mechanism: without the timeout the cap is a slower denial of service,
+///    and `the_connection_cap_delays_a_new_connection_rather_than_refusing_it`
+///    fails if either half is removed.
+/// 4. `max_connections` is clamped to at least one. A zero-permit semaphore
+///    would park the accept loop forever and serve nobody — the exact outage
+///    — and it is reachable from a programmatic caller even though the
+///    command line refuses it.
+/// 5. `acquire_owned` can only fail on a closed semaphore, which cannot
+///    happen (this loop owns the only handle and never closes it). The `Err`
+///    arm nonetheless carries on serving *without* a permit rather than
+///    returning: if the impossible happens, the failure direction is
+///    unlimited connections, never no connections.
+///
+/// None of this touches the request path. `handle` and `forward` still return
+/// `Result<_, Infallible>`, and nothing here introduces a `?` on the way to a
+/// response.
+async fn run(
+    listener: TcpListener,
+    upstream: hyper::Uri,
+    hooks: Arc<Hooks>,
+    limits: ConnectionLimits,
+) {
+    // Property 4 above. `Semaphore::new(0)` never yields a permit.
+    let connections = Arc::new(Semaphore::new(limits.max_connections.max(1)));
+    // Property 3's companion: `Duration::ZERO` would close every connection
+    // on arrival. The command line refuses anything under
+    // `MIN_HEADER_READ_TIMEOUT`; this is the floor a programmatic caller
+    // cannot get under, and it is a millisecond rather than a second only so
+    // that this module's own tests can pin the behaviour without sleeping.
+    let header_read_timeout = limits.header_read_timeout.max(Duration::from_millis(1));
     loop {
+        let permit = match Arc::clone(&connections).acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                log::error!(
+                    "the gateway's connection semaphore was closed, which should be \
+                     unreachable; serving this connection without a concurrency limit \
+                     rather than refusing it"
+                );
+                None
+            }
+        };
         let (stream, _peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(err) => {
@@ -258,9 +416,19 @@ async fn run(listener: TcpListener, upstream: hyper::Uri, hooks: Arc<Hooks>) {
         let upstream = upstream.clone();
         let hooks = Arc::clone(&hooks);
         tokio::spawn(async move {
+            // Held for exactly as long as the connection is, and released by
+            // this binding going out of scope on every exit path.
+            let _permit = permit;
             let io = TokioIo::new(stream);
             let service = service_fn(move |req| handle(req, upstream.clone(), Arc::clone(&hooks)));
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Err(err) = http1::Builder::new()
+                // Without a timer hyper's own default header-read timeout is
+                // silently inert; see `DEFAULT_HEADER_READ_TIMEOUT`.
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_read_timeout)
+                .serve_connection(io, service)
+                .await
+            {
                 log::error!("gateway connection error: {err}");
             }
         });
@@ -292,13 +460,17 @@ fn validate_upstream(upstream: &hyper::Uri) -> Result<(), ProxyError> {
 /// loop, passing a shared `Hooks` into every connection.
 pub async fn serve(cfg: GatewayConfig, hooks: Hooks) -> Result<(), ProxyError> {
     validate_upstream(&cfg.upstream)?;
+    let limits = ConnectionLimits {
+        header_read_timeout: cfg.header_read_timeout,
+        max_connections: cfg.max_connections,
+    };
     let listener = TcpListener::bind(cfg.listen)
         .await
         .map_err(|source| ProxyError::Bind {
             addr: cfg.listen,
             source,
         })?;
-    serve_on(listener, cfg.upstream, hooks).await
+    serve_on_with(listener, cfg.upstream, hooks, limits).await
 }
 
 /// The part of `serve` that runs once a listener already exists. Split out
@@ -319,8 +491,32 @@ pub async fn serve_on(
     upstream: hyper::Uri,
     hooks: Hooks,
 ) -> Result<(), ProxyError> {
+    serve_on_with(listener, upstream, hooks, ConnectionLimits::default()).await
+}
+
+/// [`serve_on`] with the per-connection resource bounds supplied rather than
+/// defaulted.
+///
+/// `serve_on` is the entry point every caller outside this crate uses, and it
+/// applies [`ConnectionLimits::default`] — so the header-read timeout and the
+/// connection cap are on for everybody, and cannot be lost by a caller
+/// forgetting to pass them. This variant exists for the two callers that need
+/// to choose: [`serve`], which reads an operator's configuration, and this
+/// module's own tests, which need a timeout short enough to assert against
+/// without sleeping for [`DEFAULT_HEADER_READ_TIMEOUT`].
+///
+/// It does not validate `limits`, for the same reason `refresh::spawn_with`
+/// does not validate its rotation: the checked entry point is the command
+/// line. What it does do is clamp, in `run`, the two values that would be an
+/// outage rather than a mistake — a zero cap and a zero timeout.
+pub async fn serve_on_with(
+    listener: TcpListener,
+    upstream: hyper::Uri,
+    hooks: Hooks,
+    limits: ConnectionLimits,
+) -> Result<(), ProxyError> {
     validate_upstream(&upstream)?;
-    run(listener, upstream, Arc::new(hooks)).await;
+    run(listener, upstream, Arc::new(hooks), limits).await;
     Ok(())
 }
 
@@ -529,6 +725,42 @@ mod tests {
         addr
     }
 
+    /// [`spawn_gateway`] with the resource bounds chosen. Goes through
+    /// `serve_on_with`, which is what `serve_on` and `serve` both bottom out
+    /// in — the only thing either adds is where the limits come from.
+    async fn spawn_gateway_with_limits(
+        upstream: SocketAddr,
+        hooks: Hooks,
+        limits: ConnectionLimits,
+    ) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gateway");
+        let addr = listener.local_addr().expect("gateway local addr");
+        let upstream_uri: hyper::Uri = format!("http://{upstream}")
+            .parse()
+            .expect("a loopback socket address is always a valid uri authority");
+        tokio::spawn(serve_on_with(listener, upstream_uri, hooks, limits));
+        addr
+    }
+
+    /// Connect, send a request line and one header, and never terminate the
+    /// header block — the cheapest denial of service there is against an
+    /// HTTP/1.1 server with no header-read timeout. One socket, twenty-five
+    /// bytes, nothing afterwards.
+    async fn half_open(gw: SocketAddr) -> tokio::net::TcpStream {
+        use tokio::io::AsyncWriteExt as _;
+        let mut stream = tokio::net::TcpStream::connect(gw)
+            .await
+            .expect("connect to the gateway");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .expect("write a partial header block");
+        stream.flush().await.expect("flush the partial headers");
+        stream
+    }
+
     async fn get_full(gw: &SocketAddr, path: &str) -> anyhow::Result<(u16, String)> {
         let uri: hyper::Uri = format!("http://{gw}{path}").parse()?;
         let req = Request::builder()
@@ -697,8 +929,10 @@ mod tests {
         let cfg = GatewayConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             upstream: "https://api.internal".parse().unwrap(),
-            salt_rotation: std::time::Duration::from_secs(3600),
+            salt_rotation: Duration::from_secs(3600),
             pccs_url: "http://example.invalid".to_string(),
+            header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
         };
         let result = serve(cfg, Hooks::noop()).await;
         assert!(
@@ -725,6 +959,173 @@ mod tests {
             matches!(result, Err(ProxyError::InvalidUpstream { .. })),
             "{result:?}"
         );
+    }
+
+    /// The one that was demonstrated against the built binary, and the
+    /// reason `DEFAULT_HEADER_READ_TIMEOUT` exists.
+    ///
+    /// hyper defaults `h1_header_read_timeout` to `Some(30s)` and then
+    /// silently does not enforce it when no `hyper::rt::Timer` is installed —
+    /// the `warn!` it emits about that needs hyper's `tracing` feature, which
+    /// is not enabled here, so there is no output either. The observable
+    /// consequence is this test: with the `.timer(..)` call deleted from
+    /// `run`, the read below never completes and this fails on the outer
+    /// timeout. It is the *only* test in this crate that distinguishes a
+    /// header-read timeout that is configured from one that is enforced.
+    ///
+    /// The outer timeout is twenty-five times the configured one, so it
+    /// cannot fail for scheduling reasons — the two are not close.
+    #[tokio::test]
+    async fn a_half_open_connection_is_closed_by_the_header_read_timeout() {
+        use tokio::io::AsyncReadExt as _;
+
+        let upstream = spawn_echo_upstream().await;
+        let limits = ConnectionLimits {
+            header_read_timeout: Duration::from_millis(200),
+            ..ConnectionLimits::default()
+        };
+        let gw = spawn_gateway_with_limits(upstream, Hooks::noop(), limits).await;
+
+        let mut idle = half_open(gw).await;
+        // hyper answers a header-read timeout with a 408 and then closes, so
+        // this reads whatever it chose to send and then sees EOF. Either a
+        // response or an immediate close satisfies "the connection did not
+        // survive"; what must not happen is the read hanging.
+        let mut seen = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut seen)).await;
+        assert!(
+            closed.is_ok(),
+            "the gateway held a half-open connection past its 200ms \
+             header-read timeout. One socket per connection and no further \
+             bytes is then enough to exhaust the process's file descriptors, \
+             after which the accept loop logs `Too many open files` and the \
+             fronted API is unreachable"
+        );
+    }
+
+    /// The cap holds, and the cap is not an outage.
+    ///
+    /// Both halves in one test on purpose, because each alone is satisfiable
+    /// by the wrong thing: "the second connection was served" passes for a
+    /// gateway with no cap at all, and "the second connection was delayed"
+    /// passes for a gateway that refused it. What is asserted is that it
+    /// waited *and* was served, with the same body an uncapped gateway would
+    /// have returned.
+    ///
+    /// It is also the test that pins the timeout and the cap as one
+    /// mechanism. Remove the semaphore and the second connection is served
+    /// immediately, failing the wait assertion. Remove the `.timer(..)` and
+    /// the idle connection never releases its permit, so the second is never
+    /// served at all and the whole test hangs.
+    #[tokio::test]
+    async fn the_connection_cap_delays_a_new_connection_rather_than_refusing_it() {
+        let upstream = spawn_echo_upstream().await;
+        let limits = ConnectionLimits {
+            header_read_timeout: Duration::from_millis(800),
+            max_connections: 1,
+        };
+        let gw = spawn_gateway_with_limits(upstream, Hooks::noop(), limits).await;
+
+        // Takes the single permit and holds it until its header-read timeout
+        // expires. Kept bound so the socket is not closed early by a drop.
+        let _idle = half_open(gw).await;
+        // Long enough that the accept loop has certainly taken the idle
+        // connection rather than racing the one below for the permit.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let started = std::time::Instant::now();
+        let body = tokio::time::timeout(Duration::from_secs(10), get(&gw, "/queued"))
+            .await
+            .expect("the capped gateway never served the queued connection")
+            .expect("a connection over the cap must be served late, never refused");
+        let waited = started.elapsed();
+
+        assert_eq!(
+            body, "echo:/queued",
+            "a connection served from behind the cap must be forwarded like any other"
+        );
+        assert!(
+            waited >= Duration::from_millis(300),
+            "the second connection was served in {waited:?}, so the cap of one \
+             was not enforced at all"
+        );
+    }
+
+    /// A cap of zero would park the accept loop on a semaphore that never
+    /// yields, which is the outage the cap exists to prevent. The command
+    /// line refuses it; this pins the clamp that a programmatic caller
+    /// cannot get under.
+    #[tokio::test]
+    async fn a_zero_connection_cap_still_serves() {
+        let upstream = spawn_echo_upstream().await;
+        let limits = ConnectionLimits {
+            max_connections: 0,
+            ..ConnectionLimits::default()
+        };
+        let gw = spawn_gateway_with_limits(upstream, Hooks::noop(), limits).await;
+        let body = tokio::time::timeout(Duration::from_secs(5), get(&gw, "/zero"))
+            .await
+            .expect("a zero cap parked the accept loop forever")
+            .expect("a zero cap must be clamped, not honoured");
+        assert_eq!(body, "echo:/zero");
+    }
+
+    /// A zero header-read timeout would close every connection on arrival —
+    /// the same outage from the other direction. Clamped in `run` for a
+    /// programmatic caller, and refused outright at the command line.
+    #[tokio::test]
+    async fn a_zero_header_read_timeout_still_serves_a_prompt_request() {
+        let upstream = spawn_echo_upstream().await;
+        let limits = ConnectionLimits {
+            header_read_timeout: Duration::ZERO,
+            ..ConnectionLimits::default()
+        };
+        let gw = spawn_gateway_with_limits(upstream, Hooks::noop(), limits).await;
+        let body = tokio::time::timeout(Duration::from_secs(5), get(&gw, "/zero-timeout"))
+            .await
+            .expect("a zero header-read timeout closed a healthy connection")
+            .expect("a zero header-read timeout must be clamped, not honoured");
+        assert_eq!(body, "echo:/zero-timeout");
+    }
+
+    /// The floor, at its boundary and in absolute terms. Written against
+    /// literals as well as against the constant, because assertions phrased
+    /// only in terms of `MIN_HEADER_READ_TIMEOUT` hold for any value of it
+    /// and would let the floor drift anywhere.
+    #[test]
+    fn a_header_read_timeout_short_enough_to_close_healthy_connections_is_refused() {
+        assert!(validate_header_read_timeout(Duration::ZERO).is_err());
+        assert!(validate_header_read_timeout(Duration::from_millis(999)).is_err());
+        assert!(validate_header_read_timeout(Duration::from_secs(1)).is_ok());
+        assert!(validate_header_read_timeout(Duration::from_secs(30)).is_ok());
+        assert!(
+            validate_header_read_timeout(MIN_HEADER_READ_TIMEOUT - Duration::from_nanos(1))
+                .is_err(),
+            "one tick under the floor is still under it"
+        );
+
+        let err =
+            validate_header_read_timeout(Duration::ZERO).expect_err("zero is under the floor");
+        let rendered = err.to_string();
+        // An operator reads this and has to be able to act on it.
+        assert!(rendered.contains("0ms"), "{rendered}");
+        assert!(rendered.contains("1000ms minimum"), "{rendered}");
+    }
+
+    /// The defaults are the ones that ship, and both are load-bearing: a
+    /// `None`/zero timeout is the denial of service this commit closes, and
+    /// hyper's own 30s is the value the missing timer made unreachable.
+    #[test]
+    fn the_shipped_defaults_are_bounded() {
+        let limits = ConnectionLimits::default();
+        assert_eq!(limits.header_read_timeout, DEFAULT_HEADER_READ_TIMEOUT);
+        assert_eq!(limits.max_connections, DEFAULT_MAX_CONNECTIONS);
+        assert!(
+            validate_header_read_timeout(limits.header_read_timeout).is_ok(),
+            "the shipped default is under the floor the command line enforces"
+        );
+        assert!(limits.max_connections >= 1);
     }
 
     #[test]

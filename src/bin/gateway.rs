@@ -5,7 +5,7 @@ use occultation::gateway::config::GatewayConfig;
 use occultation::gateway::finding::Metrics;
 use occultation::gateway::meter::LinkabilityMeter;
 use occultation::gateway::pipeline::{LogSink, Pipeline, SINK_LOG_LEVEL};
-use occultation::gateway::proxy::{serve, Hooks};
+use occultation::gateway::proxy::{self, serve, Hooks};
 use occultation::gateway::refresh;
 use occultation::gateway::scrape;
 use occultation::gateway::source::HeaderSource;
@@ -51,6 +51,21 @@ struct Cli {
     /// TCB data
     #[arg(long, default_value = "6h")]
     collateral_ttl: humantime::Duration,
+    /// How long a client has to finish sending its request headers before
+    /// the gateway closes the connection. Without this a single client
+    /// holding half-open connections exhausts the process's file descriptors
+    /// and the fronted API becomes unreachable
+    #[arg(long, default_value = "30s")]
+    header_read_timeout: humantime::Duration,
+    /// How many connections the proxy serves at once. Not a rate limit and
+    /// it refuses nothing: past the cap, connections wait in the listen
+    /// backlog and are served as earlier ones finish
+    #[arg(
+        long,
+        default_value_t = proxy::DEFAULT_MAX_CONNECTIONS as u32,
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    max_connections: u32,
 }
 
 /// A per-process meter seed drawn from the operating system's entropy, not
@@ -110,11 +125,18 @@ async fn main() -> Result<()> {
     )
     .init();
     let cli = Cli::parse();
+    // Checked before anything is bound or spawned, for the same reason
+    // `validate_upstream` runs before the bind: an operator learns about a
+    // value that would take their API down at startup, not from whoever
+    // notices the outage.
+    proxy::validate_header_read_timeout(cli.header_read_timeout.into())?;
     let cfg = GatewayConfig {
         listen: cli.listen,
         upstream: cli.upstream,
         salt_rotation: cli.salt_rotation.into(),
         pccs_url: cli.pccs_url,
+        header_read_timeout: cli.header_read_timeout.into(),
+        max_connections: cli.max_connections as usize,
     };
     let attestation_header = valid_header_name(&cli.attestation_header)?;
 

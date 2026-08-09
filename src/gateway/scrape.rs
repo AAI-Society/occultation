@@ -36,16 +36,19 @@
 //! API. That is the same direction every other decision in this crate takes:
 //! the gateway's job is being up.
 
+use crate::gateway::proxy::{ConnectionLimits, DEFAULT_HEADER_READ_TIMEOUT};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use prometheus_client::registry::Registry;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 /// The one path this listener answers on. Anything else is a 404 — this is a
 /// scrape endpoint, not a second proxy.
@@ -130,12 +133,57 @@ pub async fn bind(addr: SocketAddr) -> std::io::Result<TcpListener> {
     TcpListener::bind(addr).await
 }
 
+/// What this listener enforces per connection.
+///
+/// The header-read timeout is the proxy's, because the reason for it is the
+/// same and there is no argument for two numbers. The connection cap is much
+/// smaller, because this is a scrape endpoint: a monitoring system opens one
+/// connection every fifteen seconds, and sixty-four is already generous.
+///
+/// This listener needs the bound for a reason of its own, and it is not
+/// self-protection. File descriptors are a *process* resource: half-open
+/// connections held against the metrics port exhaust the same table the
+/// proxy's `accept` draws from, so an unbounded scrape listener is a way to
+/// take down the fronted API without ever touching the proxy's port. That is
+/// true even at the loopback default, which is why the bound is here rather
+/// than left to whoever binds it off-host.
+pub const METRICS_CONNECTION_LIMITS: ConnectionLimits = ConnectionLimits {
+    header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
+    max_connections: 64,
+};
+
 /// Accept scrapes until the process exits.
 ///
 /// One bad connection never affects another, and the accept loop never stops
 /// — the same shape as `proxy::run`, for the same reason.
 pub async fn serve_on(listener: TcpListener, registry: Arc<Registry>) {
+    serve_on_with(listener, registry, METRICS_CONNECTION_LIMITS).await
+}
+
+/// [`serve_on`] with the per-connection bounds supplied rather than
+/// defaulted, so this module's own tests can pin the header-read timeout
+/// without waiting [`DEFAULT_HEADER_READ_TIMEOUT`] for it.
+pub async fn serve_on_with(
+    listener: TcpListener,
+    registry: Arc<Registry>,
+    limits: ConnectionLimits,
+) {
+    // Both clamps are `proxy::run`'s, for the reasons given there: a
+    // zero-permit semaphore serves nobody, and a zero header-read timeout
+    // closes every connection on arrival.
+    let connections = Arc::new(Semaphore::new(limits.max_connections.max(1)));
+    let header_read_timeout = limits.header_read_timeout.max(Duration::from_millis(1));
     loop {
+        let permit = match Arc::clone(&connections).acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                log::error!(
+                    "the metrics listener's connection semaphore was closed, which \
+                     should be unreachable; serving without a concurrency limit"
+                );
+                None
+            }
+        };
         let (stream, _peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(err) => {
@@ -145,9 +193,15 @@ pub async fn serve_on(listener: TcpListener, registry: Arc<Registry>) {
         };
         let registry = Arc::clone(&registry);
         tokio::spawn(async move {
+            let _permit = permit;
             let io = TokioIo::new(stream);
             let service = service_fn(move |req| handle(req, Arc::clone(&registry)));
-            if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
+            if let Err(err) = http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_read_timeout)
+                .serve_connection(io, service)
+                .await
+            {
                 log::debug!("metrics listener connection error: {err}");
             }
         });
@@ -273,6 +327,71 @@ mod tests {
             "{DEFAULT_METRICS_LISTEN} is not a loopback address"
         );
         assert_ne!(addr.port(), 0, "a zero port would be a fresh port per run");
+    }
+
+    /// The proxy's half-open connection test, against the other listener.
+    ///
+    /// File descriptors are a process resource. Half-open connections held
+    /// against the metrics port exhaust the same table `proxy::run`'s
+    /// `accept` draws from, so an unbounded scrape listener takes the fronted
+    /// API down without ever touching the proxy's port. Without this test the
+    /// `.timer(..)` call in `serve_on_with` could be deleted and every other
+    /// test in the crate would stay green — `proxy.rs`'s equivalent covers
+    /// only `proxy::run`.
+    #[tokio::test]
+    async fn a_half_open_scrape_connection_is_closed_by_the_header_read_timeout() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the metrics listener");
+        let addr = listener.local_addr().expect("metrics local addr");
+        tokio::spawn(serve_on_with(
+            listener,
+            Arc::new(registry_with_one_verified_request()),
+            ConnectionLimits {
+                header_read_timeout: Duration::from_millis(200),
+                ..METRICS_CONNECTION_LIMITS
+            },
+        ));
+
+        let mut idle = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect to the metrics listener");
+        idle.write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .expect("write a partial header block");
+        idle.flush().await.expect("flush the partial headers");
+
+        let mut seen = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(5), idle.read_to_end(&mut seen)).await;
+        assert!(
+            closed.is_ok(),
+            "the metrics listener held a half-open connection past its 200ms \
+             header-read timeout, so it can exhaust the process's file \
+             descriptors and take the proxy down with it"
+        );
+    }
+
+    /// The shipped bounds, since `serve_on` is what `src/bin/gateway.rs`
+    /// calls and nothing above exercises the values it passes.
+    #[test]
+    fn the_metrics_listener_ships_with_both_bounds_set() {
+        assert_eq!(
+            METRICS_CONNECTION_LIMITS.header_read_timeout, DEFAULT_HEADER_READ_TIMEOUT,
+            "the scrape endpoint must not carry a second, drifting copy of \
+             the proxy's header-read timeout"
+        );
+        // Bound to a local so these read as assertions rather than as
+        // constants clippy can fold away.
+        let cap = METRICS_CONNECTION_LIMITS.max_connections;
+        assert!(cap >= 1, "a zero cap would serve nobody");
+        assert!(
+            cap < crate::gateway::proxy::DEFAULT_MAX_CONNECTIONS,
+            "this is a scrape endpoint, not a second proxy; {cap} descriptors \
+             here are descriptors the proxy cannot have"
+        );
     }
 
     /// `verify.rs`'s formatter ban, applied here for the same reason
