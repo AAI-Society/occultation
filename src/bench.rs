@@ -850,11 +850,13 @@ mod composed_tests {
     }
 
     /// "Unlinkability is expensive", reproduced qualitatively rather than by
-    /// pinning a wall clock. The desk study says ~70x unoptimized; release
-    /// builds measure 34-48x on arm64 macOS, so the 10x floor keeps 3-4x of
-    /// headroom there. CI prints the figure it measures on its own host, since
-    /// a floor that has only ever been checked on one machine is exactly what
-    /// went wrong below.
+    /// pinning a wall clock. The desk study says ~70x unoptimized. Release
+    /// measures 34-48x on arm64 macOS and 100.7x on ubuntu x86_64, so the 10x
+    /// floor holds on both with 3.4x and 10x of headroom respectively.
+    ///
+    /// Two hosts, deliberately: a floor checked on one machine is exactly what
+    /// went wrong below. CI keeps printing its own figure so the spread stays
+    /// visible rather than being re-assumed from this comment.
     ///
     /// RELEASE ONLY, and the previous claim that this form was
     /// host-independent was false. Under `cargo test`, which builds
