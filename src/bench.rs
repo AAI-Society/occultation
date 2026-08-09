@@ -849,26 +849,46 @@ mod composed_tests {
         );
     }
 
+    /// "Unlinkability is expensive", reproduced qualitatively rather than by
+    /// pinning a wall clock. The desk study says ~70x unoptimized; release
+    /// builds measure 34-48x on arm64 macOS, so the 10x floor keeps 3-4x of
+    /// headroom there. CI prints the figure it measures on its own host, since
+    /// a floor that has only ever been checked on one machine is exactly what
+    /// went wrong below.
+    ///
+    /// RELEASE ONLY, and the previous claim that this form was
+    /// host-independent was false. Under `cargo test`, which builds
+    /// unoptimized, the two sides of the division are compiled under
+    /// DIFFERENT regimes: ed25519-dalek is pure Rust and loses roughly an
+    /// order of magnitude, while blstrs' work happens in blst's C, which is
+    /// compiled optimized either way. A debug ratio therefore measures the
+    /// toolchain rather than the cryptography, and lands on either side of any
+    /// fixed floor depending on the host — 4-6x on arm64 macOS, where the 2.0
+    /// floor this test used to carry was calibrated, against 0.7-0.9x on
+    /// ubuntu x86_64, where it failed every CI run from the day it was
+    /// written until this comment was.
+    ///
+    /// Skipping it in debug means `cargo test` alone never checks the claim,
+    /// so CI runs it in release in a step of its own — one that also asserts
+    /// the test RAN, since a libtest filter matching nothing exits 0.
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "ratio is meaningful only in release; CI runs it there"
+    )]
     fn the_measured_composed_cost_is_a_large_multiple_of_the_baseline() {
-        // Host-independent form of "unlinkability is expensive". The desk
-        // study says ~70x unoptimized; a large multiple reproduces the
-        // qualitative claim without pinning a wall clock.
-        //
-        // The floor is lower under `cargo test`, which builds unoptimized:
-        // ed25519-dalek is pure Rust and loses roughly an order of magnitude,
-        // while blstrs' work happens in blst's C, which is compiled optimized
-        // either way. The debug ratio is therefore compressed and says nothing
-        // about the release one. Run `cargo test --release` for the real
-        // figure.
-        let floor = if cfg!(debug_assertions) { 2.0 } else { 10.0 };
+        const FLOOR: f64 = 10.0;
         let c = costs();
         let r = composed_report(&c);
         let ratio =
             r.measured[0].composed.total.as_secs_f64() / c.baseline.round_trip().as_secs_f64();
+        // Printed, not just asserted: the floor is a lower bound, and a lower
+        // bound alone cannot show that the margin is shrinking. CI passes
+        // `--nocapture` so the measured figure is in the log of every run.
+        println!("composed BBS+ / Ed25519 round trip = {ratio:.1}x (floor {FLOOR})");
         assert!(
-            ratio > floor,
-            "composed BBS+ was only {ratio:.1}x Ed25519 (floor {floor})"
+            ratio > FLOOR,
+            "composed BBS+ was only {ratio:.1}x Ed25519 (floor {FLOOR})"
         );
     }
 
