@@ -15,21 +15,35 @@
 //! derives both `Debug` and `Serialize` and the `ppid` field carries an
 //! explicit `serde_bytes` attribute. A single `{:?}`, a `serde_json::to_*`,
 //! or a `#[derive(Serialize)]` on anything holding one emits the hardware
-//! serial with no warning at all. Confirmed against the fixture: `serde_bytes`
-//! renders it as a *plain hex string*, so one `serde_json::to_string` on a
-//! report prints the serial in the most directly readable form there is.
+//! serial with no warning at all.
 //!
-//! Three greps at the bottom of this file enforce the absence of the
-//! spellings that would let that happen — the field access, the name of the
-//! struct that carries it (which is what a stored field, a return type or a
-//! destructuring pattern would all have to write), and the TCB-override
-//! entry point. They are duplicated as a CI guard in Task 8, and they are
-//! the only checks that survive someone marking a behavioural test
-//! `#[ignore]`. The one thing a grep cannot see — handing the whole binding
-//! to a formatter — is covered behaviourally by
-//! `a_real_verified_report_leaks_none_of_its_hardware_identifier`, which
-//! runs a genuine verification and asserts the real serial appears nowhere
-//! in the resulting verdict's `Debug` or JSON rendering.
+//! The two renderings differ, and assuming otherwise is how this module's
+//! first version shipped a hole. `serde_bytes` in `dcap-qvl` is a **rename**
+//! (its manifest maps the name to `serde-human-bytes`), which on a
+//! human-readable format calls `serialize_str` on lowercase hex — so JSON
+//! gives `"811dca2a…"`, not the number array vanilla `serde_bytes` would
+//! produce. Derived `Debug`, meanwhile, gives comma-*space* decimal:
+//! `[129, 29, 202, …]`. A leak check has to cover both shapes.
+//!
+//! Four guards, because no one of them is sufficient:
+//!
+//! 1. Three greps over `src/`, `tests/`, `benches/` and `examples/` — the
+//!    field access, the name of the struct that carries it (which a stored
+//!    field, a return type or a destructuring pattern all have to write),
+//!    and the TCB-override entry point. Task 8 duplicates these, and they
+//!    are the only checks that survive someone marking a behavioural test
+//!    `#[ignore]`.
+//! 2. A lexical ban on `:?`, `log::`, `println!`, `eprintln!` and `dbg!` in
+//!    this module's non-test code. A grep for the identifier cannot see
+//!    `log::info!("{verified:?}")`, which names nothing forbidden and never
+//!    touches the verdict, but still writes the serial to disk.
+//! 3. `a_real_verified_report_leaks_none_of_its_hardware_identifier`, which
+//!    runs a genuine verification and asserts the real serial appears in
+//!    neither the JSON nor the `Debug` rendering of the verdict, in any of
+//!    four byte shapes and independent of whitespace.
+//! 4. The escape set being a parameter list: `verified_verdict` takes the
+//!    three permitted fields, so the report itself is never in scope where
+//!    a verdict is built.
 
 use crate::gateway::collateral::{fmspc_to_hex, hex_lower, CacheLookup, CollateralCache};
 use crate::gateway::source::RawAttestation;
@@ -125,9 +139,14 @@ fn now_secs_from(t: SystemTime) -> Option<u64> {
 /// returned for `Fresh` and nothing else.** Both other arms are `Unverified`
 /// and never `Invalid`, because a cold or aged cache is our failure and not
 /// the counterparty's — reporting it as `Invalid` would blame an agent for
-/// our own operational gap. `Verified` is not reachable from here at all:
-/// `CacheLookup::Stale` carries no collateral by construction (Task 3), so
-/// there is nothing an arm could verify against even if it wanted to.
+/// our own operational gap.
+///
+/// The strong guarantee is Task 3's, not the type system's: `CacheLookup::Stale`
+/// carries no collateral by construction, so nothing can ever be *verified
+/// against* a stale entry. Note what is **not** claimed — the error side of
+/// this `Result` is a whole `QuoteVerdict`, so `Err(QuoteVerdict::Verified
+/// { .. })` compiles fine. Returning a pass from here is prevented by the
+/// tests below, not by the compiler.
 fn collateral_or_unverified(
     lookup: CacheLookup,
     fmspc_hex: &str,
@@ -549,9 +568,19 @@ mod tests {
             "expected a real Verified verdict to test against, got {verdict:?}"
         );
 
+        // Every shape the identifier can take on its way out. The two that
+        // matter in practice are the ends of this list: `serde-human-bytes`
+        // (which dcap-qvl renames to `serde_bytes` in its manifest) emits
+        // *hex* from `serde_json`, while Rust's derived `Debug` for a
+        // `Vec<u8>` emits *comma-space decimal*. An earlier version of this
+        // test carried only a `join(",")` needle, which covers neither: it
+        // matched serde's compact number array, the one form that never
+        // occurs. `format!("{verified:?}")` into `tcb_status` passed all
+        // fifteen tests as a result.
         let lower = hex_lower(&bytes);
         let upper = lower.to_uppercase();
-        let numbers = bytes
+        let debug_form = format!("{bytes:?}");
+        let joined = bytes
             .iter()
             .map(|b| b.to_string())
             .collect::<Vec<_>>()
@@ -561,16 +590,26 @@ mod tests {
             serde_json::to_string(&verdict).expect("the verdict serializes"),
             verdict
         );
+
+        // Compared with all whitespace stripped, so the match cannot depend
+        // on how a formatter chose to space its separators — the exact
+        // detail that let the leak through before.
+        fn squeeze(s: &str) -> String {
+            s.chars().filter(|c| !c.is_whitespace()).collect()
+        }
+        let rendered = squeeze(&rendered);
+
         // Deliberately does not print the needle or the verdict on failure:
         // a test that leaks the hardware serial into CI logs to complain
         // about the hardware serial leaking has not helped anyone.
         for (shape, needle) in [
             ("lowercase hex", &lower),
             ("uppercase hex", &upper),
-            ("a byte array", &numbers),
+            ("a Debug byte array", &debug_form),
+            ("a comma-joined byte array", &joined),
         ] {
             assert!(
-                !rendered.contains(needle.as_str()),
+                !rendered.contains(&squeeze(needle)),
                 "the hardware identifier reached the verdict as {shape}"
             );
         }
@@ -746,6 +785,11 @@ mod tests {
     #[test]
     fn tcb_attribute_hex_is_the_same_rendering_the_cache_keys_on() {
         let fmspc: Fmspc = [0x00, 0x80, 0x6f, 0x05, 0x00, 0xff];
+        // Documents the wrapper relation rather than testing it: since the
+        // extraction, `fmspc_to_hex` *is* a call to `hex_lower`, so this
+        // line cannot fail. It is kept because the equality is the property
+        // the rest of the module depends on, and a future edit that split
+        // them again should have to delete an assertion that says so.
         assert_eq!(hex_lower(&fmspc), fmspc_to_hex(&fmspc));
         assert_eq!(hex_lower(&fmspc), "00806f0500ff");
         // Zero-padding, at a report field's width rather than an FMSPC's.
@@ -755,8 +799,12 @@ mod tests {
         );
     }
 
+    /// `TcbConfig` ordering only. The keys here are illustrative and are
+    /// deliberately *not* ones the implementation produces — the real key
+    /// lists are pinned against real and synthetic reports elsewhere in this
+    /// module.
     #[test]
-    fn tcb_config_carries_the_attributes_the_meter_partitions_on() {
+    fn tcb_config_orders_its_attributes_regardless_of_insertion_order() {
         let c = TcbConfig::for_test(&[("tdx_module", "1.5.05"), ("pce_svn", "13")]);
         assert_eq!(c.attributes.len(), 2);
         assert_eq!(c.attributes.get("pce_svn").map(String::as_str), Some("13"));
@@ -767,6 +815,191 @@ mod tests {
         );
     }
 
+    /// A `TDReport10` with a distinct fill byte per field, so a helper that
+    /// reads the *wrong* field produces the wrong value rather than a
+    /// coincidentally-equal one. Every field is `pub` and the struct is
+    /// `Copy` plain data, so this needs no fixture, no network and no clock
+    /// — which is why the TDX 1.5 and SGX key lists have no excuse for going
+    /// unpinned just because no sample quote for them exists.
+    fn td10_with_distinct_fields() -> TDReport10 {
+        TDReport10 {
+            tee_tcb_svn: [0x11; 16],
+            mr_seam: [0x22; 48],
+            mr_signer_seam: [0x33; 48],
+            seam_attributes: [0x44; 8],
+            td_attributes: [0x55; 8],
+            xfam: [0x66; 8],
+            mr_td: [0x77; 48],
+            mr_config_id: [0x88; 48],
+            mr_owner: [0x99; 48],
+            mr_owner_config: [0xaa; 48],
+            rt_mr0: [0xbb; 48],
+            rt_mr1: [0xcc; 48],
+            rt_mr2: [0xdd; 48],
+            rt_mr3: [0xee; 48],
+            report_data: [0xff; 64],
+        }
+    }
+
+    const TEST_FMSPC: Fmspc = [0x00, 0x80, 0x6f, 0x05, 0x00, 0x01];
+
+    /// TDX 1.5 has no sample quote anywhere upstream, so this is the only
+    /// thing standing between `tcb_config_from_td15` and a silent wrong
+    /// answer. It pins the full key list *and* every value, so mapping a key
+    /// to the wrong field — or reading `td.base` where `td` was meant —
+    /// fails here rather than in the meter six weeks from now.
+    #[test]
+    fn the_tdx_15_config_adds_the_second_svn_and_keeps_the_base_attributes() {
+        let td15 = TDReport15 {
+            base: td10_with_distinct_fields(),
+            tee_tcb_svn2: [0x12; 16],
+            mr_service_td: [0x34; 48],
+        };
+        let c = tcb_config_from_td15(&td15, &TEST_FMSPC);
+
+        let keys: Vec<&str> = c.attributes.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "fmspc",
+                "mr_seam",
+                "mr_signer_seam",
+                "seam_attributes",
+                "td_attributes",
+                "tee_tcb_svn",
+                "tee_tcb_svn2",
+                "xfam",
+            ]
+        );
+        let get = |k: &str| c.attributes.get(k).map(String::as_str).unwrap_or("");
+        assert_eq!(get("fmspc"), "00806f050001");
+        assert_eq!(get("tee_tcb_svn"), "11".repeat(16));
+        assert_eq!(get("mr_seam"), "22".repeat(48));
+        assert_eq!(get("mr_signer_seam"), "33".repeat(48));
+        assert_eq!(get("seam_attributes"), "44".repeat(8));
+        assert_eq!(get("td_attributes"), "55".repeat(8));
+        assert_eq!(get("xfam"), "66".repeat(8));
+        // The field TDX 1.5 adds, and the reason this helper exists at all.
+        assert_eq!(get("tee_tcb_svn2"), "12".repeat(16));
+
+        // `mr_service_td` measures the workload's service TD, not the
+        // platform, so it must not partition the meter.
+        assert!(!c.attributes.contains_key("mr_service_td"));
+        assert!(!get("tee_tcb_svn2").contains("34"));
+    }
+
+    /// The SGX equivalent. Upstream does ship an SGX sample quote, but this
+    /// pins the key list without needing it — and pins the two integer
+    /// renderings (`misc_select` as zero-padded hex, the ISV fields as
+    /// decimal) that no byte-array test would catch.
+    #[test]
+    fn the_sgx_config_carries_platform_configuration_and_no_measurements() {
+        let e = EnclaveReport {
+            cpu_svn: [0x11; 16],
+            misc_select: 0x0000_00a5,
+            reserved1: [0; 28],
+            attributes: [0x22; 16],
+            mr_enclave: [0x33; 32],
+            reserved2: [0; 32],
+            mr_signer: [0x44; 32],
+            reserved3: [0; 96],
+            isv_prod_id: 7,
+            isv_svn: 11,
+            reserved4: [0; 60],
+            report_data: [0x55; 64],
+        };
+        let c = tcb_config_from_sgx(&e, &TEST_FMSPC);
+
+        let keys: Vec<&str> = c.attributes.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "attributes",
+                "cpu_svn",
+                "fmspc",
+                "isv_prod_id",
+                "isv_svn",
+                "misc_select",
+            ]
+        );
+        let get = |k: &str| c.attributes.get(k).map(String::as_str).unwrap_or("");
+        assert_eq!(get("fmspc"), "00806f050001");
+        assert_eq!(get("cpu_svn"), "11".repeat(16));
+        assert_eq!(get("attributes"), "22".repeat(16));
+        // Zero-padded hex, so 0xa5 does not collide with 0xa50 downstream.
+        assert_eq!(get("misc_select"), "000000a5");
+        assert_eq!(get("isv_prod_id"), "7");
+        assert_eq!(get("isv_svn"), "11");
+
+        // The enclave's identity and its caller-controlled data must not be
+        // here: mr_enclave and mr_signer name a specific binary and signing
+        // key, which would collapse the anonymity set to that one enclave.
+        for forbidden in ["mr_enclave", "mr_signer", "report_data", "ppid"] {
+            assert!(!c.attributes.contains_key(forbidden), "{forbidden} leaked");
+        }
+        for (k, v) in &c.attributes {
+            assert!(!v.contains(&"33".repeat(32)), "mr_enclave reached {k}");
+            assert!(!v.contains(&"44".repeat(32)), "mr_signer reached {k}");
+            assert!(!v.contains(&"55".repeat(64)), "report_data reached {k}");
+        }
+    }
+
+    /// The `Report` dispatch, for all three variants.
+    ///
+    /// Testing the three `tcb_config_from_*` helpers directly is not enough:
+    /// it leaves the `match` in `verified_verdict` unexercised for every
+    /// variant the fixture is not. Routing `TD15` to `tcb_config_from_td10`
+    /// — which compiles, since `TDReport15` derefs nothing but exposes
+    /// `base` — silently drops `tee_tcb_svn2` from the fingerprint, and it
+    /// survived the helper tests alone. Only the TDX 1.0 row here is also
+    /// covered by the real fixture; the other two exist only here.
+    #[test]
+    fn each_report_variant_routes_to_its_own_platform_and_attributes() {
+        let base = td10_with_distinct_fields();
+        let verdict = |r: Report| verified_verdict("UpToDate".into(), vec![], &r, &TEST_FMSPC);
+
+        let unwrap = |v: QuoteVerdict| match v {
+            QuoteVerdict::Verified {
+                platform, config, ..
+            } => (platform, config),
+            other => panic!("expected Verified, got {other:?}"),
+        };
+
+        let (p, c) = unwrap(verdict(Report::TD10(base)));
+        assert_eq!(p, Platform::TdxV10);
+        assert!(!c.attributes.contains_key("tee_tcb_svn2"));
+
+        let (p, c) = unwrap(verdict(Report::TD15(TDReport15 {
+            base,
+            tee_tcb_svn2: [0x12; 16],
+            mr_service_td: [0x34; 48],
+        })));
+        assert_eq!(p, Platform::TdxV15);
+        assert_eq!(
+            c.attributes.get("tee_tcb_svn2").map(String::as_str),
+            Some("12".repeat(16).as_str()),
+            "the TDX 1.5 arm must use the TDX 1.5 helper"
+        );
+
+        let (p, c) = unwrap(verdict(Report::SgxEnclave(EnclaveReport {
+            cpu_svn: [0x11; 16],
+            misc_select: 0xa5,
+            reserved1: [0; 28],
+            attributes: [0x22; 16],
+            mr_enclave: [0x33; 32],
+            reserved2: [0; 32],
+            mr_signer: [0x44; 32],
+            reserved3: [0; 96],
+            isv_prod_id: 7,
+            isv_svn: 11,
+            reserved4: [0; 60],
+            report_data: [0x55; 64],
+        })));
+        assert_eq!(p, Platform::SgxEnclave);
+        assert_eq!(c.attributes.get("isv_svn").map(String::as_str), Some("11"));
+        assert!(!c.attributes.contains_key("tee_tcb_svn"));
+    }
+
     /// Assemble a needle at runtime so a grep for it cannot match the test
     /// that performs the grep. Spelling either name out in a string literal
     /// — or in a doc comment — would make these tests fail on their own
@@ -775,12 +1008,119 @@ mod tests {
         format!("{head}{tail}")
     }
 
-    fn grep_src(pattern: &str) -> String {
+    /// The crate roots the structural guards search.
+    ///
+    /// `src/` alone is not enough: Tasks 5–7 wire this verifier into
+    /// integration tests, and a `{:?}` on a report in `tests/` dumps the
+    /// hardware serial into CI logs — the exact harm, with none of the
+    /// guards firing. Enumerated rather than `.` on purpose, because `.`
+    /// descends into `target/`, where the vendored `dcap-qvl` source would
+    /// match every pattern here and make all three tests fail permanently.
+    const CRATE_ROOTS: [&str; 4] = ["src/", "tests/", "benches/", "examples/"];
+
+    /// Grep the crate for `pattern`, returning the matching lines.
+    ///
+    /// The guards below pass when this returns empty — and an empty result
+    /// is also what a wrong cwd, a missing root, or an unreadable directory
+    /// produce, since grep exits 2 with empty stdout. Checking the exit
+    /// status is what stops all three structural guards passing vacuously in
+    /// exactly the situation where they can no longer see anything. grep
+    /// exits 0 for "found", 1 for "not found", and anything else is a
+    /// failure to search that must be loud.
+    fn grep_crate(pattern: &str) -> String {
+        let roots: Vec<&str> = CRATE_ROOTS
+            .iter()
+            .copied()
+            .filter(|r| std::path::Path::new(r).is_dir())
+            .collect();
+        assert!(
+            roots.contains(&"src/") && roots.contains(&"tests/"),
+            "grep is not running from the package root; it can see {roots:?} \
+             of {CRATE_ROOTS:?} and would report every pattern as absent"
+        );
+
+        let mut args = vec!["-rn", "--include=*.rs", pattern];
+        args.extend_from_slice(&roots);
         let out = std::process::Command::new("grep")
-            .args(["-rn", "--include=*.rs", pattern, "src/"])
+            .args(&args)
             .output()
             .expect("grep runs");
+        assert!(
+            matches!(out.status.code(), Some(0) | Some(1)),
+            "grep could not search {roots:?} (exit {:?}): {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A positive control for [`grep_crate`]. Every guard below asserts that
+    /// a pattern is *absent*, so all of them would pass against a search
+    /// that silently matched nothing. This one asserts a pattern that must
+    /// exist really is found, which is the only thing distinguishing "the
+    /// crate is clean" from "the search did not happen".
+    #[test]
+    fn the_structural_guards_are_actually_searching_something() {
+        let found = grep_crate("fn tcb_config_from_td10");
+        assert!(
+            found.contains("src/gateway/verify.rs"),
+            "grep found no definition it must find; the other guards in this \
+             module are passing vacuously: {found}"
+        );
+    }
+
+    /// Nothing in the verifier's non-test code may hand a value to a
+    /// formatter or a logger.
+    ///
+    /// This closes the path no other guard can see. `log::info!("{v:?}")`
+    /// writes the hardware serial to disk, names no forbidden token, never
+    /// touches the verdict, and would pass every other test in this file —
+    /// and `log`/`env_logger` are already crate dependencies, so it is one
+    /// line away at all times. The non-test half of this module contains
+    /// zero `:?` and zero logging today, so the guard is free and cannot
+    /// false-positive. If a debug rendering is ever genuinely needed near
+    /// this boundary, write it by hand and prove by test that it omits the
+    /// identifier — do not relax this.
+    #[test]
+    fn the_verifier_hands_nothing_to_a_formatter_it_did_not_choose() {
+        let src = include_str!("verify.rs");
+        // Split on the test module's own header, not on a bare `#[cfg(test)]`
+        // — `TcbConfig::for_test` carries one of those far above here, so the
+        // naive split silently truncated the searched region to the first
+        // hundred lines. The assertion below is what caught that.
+        let non_test = src
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("the module has a non-test half");
+        assert!(
+            non_test.contains("fn verified_verdict") && non_test.contains("fn verify_at"),
+            "the split found no implementation, so this guard would pass \
+             against an empty string"
+        );
+
+        // Comments are not code, and this module's documentation has to be
+        // able to discuss the very constructs the guard bans. Block comments
+        // would defeat a line-wise strip, so they are banned outright rather
+        // than parsed.
+        assert!(
+            !non_test.contains("/*"),
+            "block comments would let banned code hide from this guard"
+        );
+        let code: String = non_test
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(code.contains("fn verified_verdict"));
+
+        for banned in [":?", "log::", "println!", "eprintln!", "dbg!"] {
+            assert!(
+                !code.contains(banned),
+                "{banned} appears in the verifier's non-test code, which is \
+                 how a verified report reaches a log or a panic message \
+                 without naming anything the greps look for"
+            );
+        }
     }
 
     /// A structural guard, not a stylistic one. This call would make the
@@ -789,10 +1129,10 @@ mod tests {
     /// behavioural tests `#[ignore]`.
     #[test]
     fn the_dangerous_override_is_never_called_anywhere_in_this_crate() {
-        let found = grep_src(&needle("dangerous_verify_with", "_tcb_override"));
+        let found = grep_crate(&needle("dangerous_verify_with", "_tcb_override"));
         assert!(
             found.is_empty(),
-            "the TCB-override entry point appears in src/: {found}"
+            "the TCB-override entry point appears in the crate: {found}"
         );
     }
 
@@ -807,13 +1147,13 @@ mod tests {
     /// three permitted fields as parameters instead.
     #[test]
     fn the_hardware_identifier_is_referenced_nowhere_in_this_crate() {
-        let by_field = grep_src(&needle("\\.", "ppid"));
+        let by_field = grep_crate(&needle("\\.", "ppid"));
         assert!(
             by_field.is_empty(),
             "something reads the hardware identifier field: {by_field}"
         );
 
-        let by_type = grep_src(&needle("Verified", "Report"));
+        let by_type = grep_crate(&needle("Verified", "Report"));
         assert!(
             by_type.is_empty(),
             "something names the report type that carries the hardware \
