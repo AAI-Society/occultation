@@ -81,19 +81,32 @@ const MAX_TRACKED_PLATFORMS: usize = 512;
 /// tick, roughly a thousand times a second); anything sub-second fails the
 /// same way and less visibly.
 ///
-/// A minute is well below any interval an operator would choose on purpose —
-/// the default is an hour — and well above any traffic rate at which the
-/// collapse is possible. See
-/// `a_sub_second_rotation_is_the_collapse_this_floor_exists_to_refuse`, which
+/// One second, and no more, because one second is all this argument
+/// supports. A floor can only see one of the two factors in
+/// `set_size ~= rotation * arrival_rate`, so any value above the sub-second
+/// case is a guess about traffic this module cannot observe: at one request
+/// a minute a sixty-second floor still collapses every set, and at a
+/// thousand requests a second a one-second epoch holds a thousand sessions
+/// and is an honest measurement the floor has no business refusing. The
+/// operator who wants short epochs at high volume has the *best* privacy
+/// properties and must not be the one penalised.
+///
+/// The other factor is defended where it can actually be seen — at the point
+/// of rendering, against the session count the observation carries. See
+/// `finding::MIN_MEANINGFUL_SESSIONS`.
+///
+/// `a_sub_second_rotation_is_the_collapse_this_floor_exists_to_refuse`
 /// demonstrates the harm rather than describing it.
-pub const MIN_SALT_ROTATION: Duration = Duration::from_secs(60);
+pub const MIN_SALT_ROTATION: Duration = Duration::from_secs(1);
 
 /// A salt rotation short enough to make the meter report maximum anonymity.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "a salt rotation of {rotation:?} is shorter than the {minimum:?} minimum; \
-     the meter would clear its store between observations and report every \
-     request as an anonymity set of one"
+    "a salt rotation of {}ms is shorter than the {}ms minimum; the meter \
+     would clear its store between observations and report every request as \
+     an anonymity set of one",
+    .rotation.as_millis(),
+    .minimum.as_millis()
 )]
 pub struct RotationTooShort {
     pub rotation: Duration,
@@ -168,32 +181,36 @@ impl RefreshQueue {
 /// timer and stop the salt rotating, which is a correlation-window failure
 /// caused by an unrelated network problem.
 ///
-/// Fallible only for [`validate_rotation`]'s sake, and deliberately so: the
-/// timer here is the *only* caller of `rotate_if_due` in the process, so
-/// gating the timer is what makes an unsafe rotation interval unstartable
-/// rather than merely discouraged. A `LinkabilityMeter` built with a short
-/// rotation but never driven simply keeps correlating, which is the safe
-/// direction.
+/// The rotation interval is **not** a parameter. It is read off the meter,
+/// via [`LinkabilityMeter::rotation`], because that is the value
+/// `rotate_if_due` actually compares against. An earlier version took its own
+/// `rotation` argument and validated that — which constrained this timer's
+/// cadence and said nothing at all about the interval that clears the store,
+/// since the two were independent values that agreed only because `main`
+/// passed one variable to both. A meter built short and driven by a timer
+/// configured long was constructible, and the floor could not see it. With
+/// the parameter gone there is one value and it is the right one.
+///
+/// Fallible for [`validate_rotation`]'s sake, and deliberately so: this timer
+/// is the *only* caller of `rotate_if_due` in the process, so refusing to
+/// start it is what makes an unsafe interval unrunnable rather than merely
+/// discouraged. A `LinkabilityMeter` built short and never driven simply
+/// keeps correlating, which is the safe direction.
 pub fn spawn(
     cache: Arc<CollateralCache>,
     meter: Arc<LinkabilityMeter>,
-    rotation: Duration,
 ) -> Result<RefreshQueue, RotationTooShort> {
-    validate_rotation(rotation)?;
-    Ok(spawn_with(cache, meter, rotation))
+    validate_rotation(meter.rotation())?;
+    Ok(spawn_with(cache, meter))
 }
 
 /// [`spawn`] without the interval check, so this module's own tests can drive
-/// a rotation faster than [`MIN_SALT_ROTATION`] without waiting a minute for
-/// it. Private: the checked entry point is the only way in from outside.
-fn spawn_with(
-    cache: Arc<CollateralCache>,
-    meter: Arc<LinkabilityMeter>,
-    rotation: Duration,
-) -> RefreshQueue {
+/// a rotation faster than [`MIN_SALT_ROTATION`] without waiting for it.
+/// Private: the checked entry point is the only way in from outside.
+fn spawn_with(cache: Arc<CollateralCache>, meter: Arc<LinkabilityMeter>) -> RefreshQueue {
     let (tx, rx) = mpsc::channel::<Vec<u8>>(QUEUE_DEPTH);
     tokio::spawn(drive_refresh(cache, rx));
-    tokio::spawn(drive_rotation(meter, rotation));
+    tokio::spawn(drive_rotation(meter));
     RefreshQueue { tx: Some(tx) }
 }
 
@@ -210,8 +227,8 @@ fn poll_period(rotation: Duration) -> Duration {
     (rotation / 4).max(Duration::from_millis(1))
 }
 
-async fn drive_rotation(meter: Arc<LinkabilityMeter>, rotation: Duration) {
-    let mut ticker = tokio::time::interval(poll_period(rotation));
+async fn drive_rotation(meter: Arc<LinkabilityMeter>) {
+    let mut ticker = tokio::time::interval(poll_period(meter.rotation()));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
@@ -585,6 +602,55 @@ mod tests {
         }
     }
 
+    /// `verify.rs`'s formatter ban, extended to the one gateway module that
+    /// did not have it.
+    ///
+    /// This module handles attacker-supplied quote bytes and logs about them
+    /// by FMSPC, so it is a plausible place for a future `{value:?}` to dump
+    /// something it should not. There is no leak today — every formatted
+    /// value here is a `Duration` or an FMSPC hex string — and the guard is
+    /// free precisely because of that: the non-test code contains no debug
+    /// format spec at all, so nothing has to be rewritten to adopt it.
+    /// `RotationTooShort`'s `#[error(...)]` renders its two `Duration`s as
+    /// milliseconds through explicit arguments rather than `{rotation:?}`,
+    /// which is both the reason this guard passes and a better operator
+    /// message than `1.5s` debug output.
+    ///
+    /// `?}` rather than `:?` for the reason `verify.rs` settled on: `{v:#?}`
+    /// and `{v:x?}` contain no `:?` at all, and every Rust debug format spec
+    /// ends in `?` immediately before its closing brace.
+    #[test]
+    fn nothing_in_the_non_test_module_reaches_a_debug_formatter() {
+        let src = include_str!("refresh.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            src.matches(MARKER).count(),
+            1,
+            "ambiguous test module boundary"
+        );
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("fn refresh_one_within") && non_test.contains("pub fn spawn"),
+            "the scanned region does not reach the implementation, so this \
+             guard would pass against a truncated string"
+        );
+        assert!(
+            !non_test.contains("/*"),
+            "block comments would let banned code hide from this guard"
+        );
+        let code: String = non_test
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in ["?}", ":?", "println!", "eprintln!", "dbg!"] {
+            assert!(
+                !code.contains(banned),
+                "`{banned}` appears in the refresher's non-test code"
+            );
+        }
+    }
+
     /// The floor, at its boundary, and the harm it exists to refuse.
     #[test]
     fn a_sub_second_rotation_is_the_collapse_this_floor_exists_to_refuse() {
@@ -626,15 +692,67 @@ mod tests {
         assert_eq!(last.distinct_configs, 5);
         assert_eq!(last.total_sessions, 5);
 
-        // And the boundary itself.
+        // The boundary, in absolute terms as well as relative ones. Written
+        // against literals and not only against MIN_SALT_ROTATION itself:
+        // three assertions phrased in terms of the constant hold for *any*
+        // value of it, so on their own they would let the floor drift
+        // anywhere without failing.
         assert!(validate_rotation(Duration::ZERO).is_err());
         assert!(validate_rotation(Duration::from_millis(999)).is_err());
+        assert!(
+            validate_rotation(Duration::from_secs(1)).is_ok(),
+            "one second is the value this module's own argument supports; a \
+             floor above it is a guess about traffic this module cannot see"
+        );
+        assert!(
+            validate_rotation(Duration::from_secs(2)).is_ok(),
+            "two seconds must not be refused: at high volume a short epoch is \
+             an honest measurement, and the operator asking for one has the \
+             best privacy properties"
+        );
         assert!(
             validate_rotation(MIN_SALT_ROTATION - Duration::from_nanos(1)).is_err(),
             "one tick under the floor is still under it"
         );
         assert!(validate_rotation(MIN_SALT_ROTATION).is_ok());
         assert!(validate_rotation(Duration::from_secs(3600)).is_ok());
+    }
+
+    /// The invariant has to sit on the object whose field `rotate_if_due`
+    /// reads, or it constrains a duplicate.
+    ///
+    /// There is now exactly one rotation interval in the system: the meter's.
+    /// `spawn` validates *that* value and the timer polls against *that*
+    /// value, so "a meter built at 1 ms driven by a timer told an hour" is no
+    /// longer expressible — there is no second place to put the second
+    /// number. This test is what a reader checks that against, since the
+    /// property is the absence of a parameter and absences are invisible.
+    #[tokio::test]
+    async fn the_timer_and_the_store_cannot_disagree_about_the_rotation_interval() {
+        let cache = Arc::new(CollateralCache::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(3600),
+        ));
+        // A meter under the floor cannot be driven, whatever the caller
+        // wanted the timer to do — there is nowhere to say otherwise.
+        let short = Arc::new(LinkabilityMeter::new(Duration::from_millis(1), 7));
+        assert_eq!(short.rotation(), Duration::from_millis(1));
+        assert!(
+            spawn(Arc::clone(&cache), short).is_err(),
+            "a meter whose own interval is under the floor must not be driven"
+        );
+
+        // ...and the accessor really is the meter's own field, not a default:
+        // the timer's cadence is derived from it, so a wrong answer here is a
+        // wrong polling interval.
+        for interval in [
+            Duration::from_secs(1),
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        ] {
+            let m = LinkabilityMeter::new(interval, 7);
+            assert_eq!(m.rotation(), interval);
+        }
     }
 
     /// The floor has to be enforced where the rotation timer is started, not
@@ -647,18 +765,23 @@ mod tests {
             "http://127.0.0.1:1".to_string(),
             Duration::from_secs(3600),
         ));
-        let meter = Arc::new(LinkabilityMeter::new(Duration::from_secs(3600), 7));
+        let meter = Arc::new(LinkabilityMeter::new(MIN_SALT_ROTATION, 7));
 
-        let err = match spawn(Arc::clone(&cache), Arc::clone(&meter), Duration::ZERO) {
+        let zero_rotation = Arc::new(LinkabilityMeter::new(Duration::ZERO, 7));
+        let err = match spawn(Arc::clone(&cache), zero_rotation) {
             Ok(_) => panic!("a zero rotation must not start a gateway"),
             Err(err) => err,
         };
         assert_eq!(err.minimum, MIN_SALT_ROTATION);
-        // The operator reads this; it has to say what to do about it.
+        assert_eq!(err.rotation, Duration::ZERO);
+        // The operator reads this; it has to say what to do about it, and it
+        // has to name the interval it refused.
         let rendered = err.to_string();
         assert!(rendered.contains("anonymity set of one"), "{rendered}");
+        assert!(rendered.contains("0ms"), "{rendered}");
+        assert!(rendered.contains("1000ms minimum"), "{rendered}");
 
-        assert!(spawn(cache, meter, MIN_SALT_ROTATION).is_ok());
+        assert!(spawn(cache, meter).is_ok());
     }
 
     /// `spawn` has to actually drive rotation. Nothing else here would notice
@@ -670,6 +793,8 @@ mod tests {
     /// 40 ms instead of [`MIN_SALT_ROTATION`]; `spawn` adds only the interval
     /// check, which
     /// `spawn_refuses_a_rotation_short_enough_to_collapse_every_set` covers.
+    /// The 40 ms lives on the meter, and the timer reads it from there — see
+    /// `the_timer_and_the_store_cannot_disagree_about_the_rotation_interval`.
     #[tokio::test]
     async fn the_background_task_rotates_the_salt_when_it_comes_due() {
         let cache = Arc::new(CollateralCache::new(
@@ -685,7 +810,7 @@ mod tests {
         meter.observe(&config);
         assert_eq!(meter.observe(&config).set_size, 2);
 
-        let _queue = spawn_with(cache, Arc::clone(&meter), Duration::from_millis(40));
+        let _queue = spawn_with(cache, Arc::clone(&meter));
 
         // Poll rather than sleep a fixed amount: the timer polls at a quarter
         // of the interval, so the rotation lands somewhere inside 1.25 of it.

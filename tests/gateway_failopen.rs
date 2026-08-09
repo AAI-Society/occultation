@@ -449,12 +449,8 @@ async fn spawn_gateway_with_pccs(upstream: SocketAddr, pccs_url: &str) -> Gw {
         Duration::from_secs(3600),
     ));
     let meter = Arc::new(LinkabilityMeter::new(Duration::from_secs(3600), 7));
-    let queue = refresh::spawn(
-        Arc::clone(&cache),
-        Arc::clone(&meter),
-        Duration::from_secs(3600),
-    )
-    .expect("an hour is well above the minimum salt rotation");
+    let queue = refresh::spawn(Arc::clone(&cache), Arc::clone(&meter))
+        .expect("an hour is well above the minimum salt rotation");
 
     let addr = serve_pipeline(
         upstream,
@@ -561,6 +557,21 @@ const ALL_FAULTS: [Fault; 8] = [
 /// future. This is also the flavour `#[tokio::main]` gives the real binary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_stage_fails_open() {
+    // The multi-threaded flavour is load-bearing, and an attribute is not an
+    // assertion: `worker_threads = 1` silently reinstates the current-thread
+    // false positive this test was rewritten to remove.
+    assert!(
+        tokio::runtime::Handle::current().metrics().num_workers() > 1,
+        "this test needs more than one worker, or a blocking hook stalls the \
+         client's connection driver too and the timing assertion below holds \
+         wherever the hook sits"
+    );
+
+    // Set inside the timing branch below. Dropping VerifierHangsThenErrors
+    // from ALL_FAULTS would otherwise leave the whole timing fix unexercised
+    // and the suite green.
+    let mut timing_checked = false;
+
     for fault in ALL_FAULTS {
         let upstream = spawn_echo_upstream().await;
         let gw = spawn_gateway_with_fault(upstream, fault).await;
@@ -575,6 +586,7 @@ async fn every_stage_fails_open() {
             "{fault:?} never actually fired, so this case proves nothing"
         );
         if fault == Fault::VerifierHangsThenErrors {
+            timing_checked = true;
             // Both halves, because `elapsed >= HANG` alone is vacuous for a
             // small enough `HANG` — at `Duration::ZERO` it can never fail,
             // and the fixture would be decorative again.
@@ -592,6 +604,12 @@ async fn every_stage_fails_open() {
             );
         }
     }
+
+    assert!(
+        timing_checked,
+        "the sweep never ran the hanging verifier, so nothing here pins that \
+         hook cost is time-to-first-byte cost"
+    );
 }
 
 /// The other half of fail-open, and the half `catch_unwind` alone does not

@@ -157,6 +157,20 @@ impl LinkabilityMeter {
         }
     }
 
+    /// The interval [`rotate_if_due`](Self::rotate_if_due) measures against.
+    ///
+    /// Exists so whatever drives that method can read the *same* value it
+    /// consults rather than carrying a second copy. `refresh::spawn` used to
+    /// take its own `rotation` argument, which meant the timer's cadence and
+    /// the clearing interval were independent values that only agreed because
+    /// `main` happened to pass one variable to both — a meter built with a
+    /// one-second rotation and a timer configured for an hour was
+    /// constructible, and validating the timer's copy said nothing about the
+    /// one that actually clears the store.
+    pub fn rotation(&self) -> Duration {
+        self.rotation
+    }
+
     pub fn observe(&self, config: &TcbConfig) -> Observation {
         let mut s = recover(self.store.write());
 

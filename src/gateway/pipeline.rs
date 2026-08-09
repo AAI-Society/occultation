@@ -88,20 +88,20 @@ pub const STAGE_SINK: &str = "finding sink";
 /// avoids the vocabulary [`crate::gateway::finding`]'s `WhyKind::classify`
 /// keys on — this is not a collateral problem and not a provisioning-service
 /// problem, and mislabelling it would send an operator to fix the wrong thing.
-pub const SOURCE_PANICKED: &str =
+pub(crate) const SOURCE_PANICKED: &str =
     "the attestation source panicked before a quote could be read, so this \
      request was forwarded without being measured";
 
 /// See [`SOURCE_PANICKED`]: with the source gone, its own claim about session
 /// binding is gone too, and `Bound` must never be the fallback.
-pub const BINDING_UNKNOWN: &str =
+pub(crate) const BINDING_UNKNOWN: &str =
     "the attestation source panicked, so nothing is known about whether a \
      quote was bound to this session";
 
-pub const NO_ATTESTATION: &str =
+pub(crate) const NO_ATTESTATION: &str =
     "no attestation accompanied this request, so there was nothing to verify";
 
-pub const VERIFIER_PANICKED: &str =
+pub(crate) const VERIFIER_PANICKED: &str =
     "the quote verifier panicked, so this request was forwarded without a verdict";
 
 /// Verify a quote. The seam Task 4's [`QuoteVerifier`] plugs into, and the one
@@ -733,7 +733,7 @@ mod tests {
     /// must not. Without the `Unverified`-only gate, an agent replaying junk
     /// turns every request into a call to the provisioning service.
     ///
-    /// Uses a real, live queue rather than [`RefreshQueue::inert`], so the
+    /// Uses a real, live queue rather than [`RefreshQueue::never_refreshes`], so the
     /// assertion is about what was sent and not about what was swallowed.
     #[tokio::test]
     async fn only_an_unverified_verdict_schedules_a_collateral_fetch() {

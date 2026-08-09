@@ -125,8 +125,10 @@ async fn main() -> Result<()> {
     // Fallible: `spawn` refuses a salt rotation short enough to make the
     // meter report every request as an anonymity set of one. A configuration
     // mistake that would make the tool lie is a startup failure, the same
-    // shape as `serve`'s `https://` upstream check.
-    let queue = refresh::spawn(Arc::clone(&cache), Arc::clone(&meter), cfg.salt_rotation)?;
+    // shape as `serve`'s `https://` upstream check. It reads the interval off
+    // the meter rather than taking one here, so there is no second copy of
+    // the value for this call site to get wrong.
+    let queue = refresh::spawn(Arc::clone(&cache), Arc::clone(&meter))?;
 
     // Registered but not yet served: exposing a scrape endpoint is Task 8's,
     // and it must not be reachable through the proxy's forwarding path. The
@@ -210,8 +212,34 @@ mod tests {
     /// A header name no request could ever carry produces a gateway that
     /// reports "no attestation" forever. That must be a startup error, not a
     /// discovery.
+    ///
+    /// The source check is the load-bearing half. `valid_header_name` passing
+    /// its own unit tests says nothing about whether `main` calls it — delete
+    /// the call, pass `&cli.attestation_header` straight to `HeaderSource`,
+    /// and every behavioural test in this crate stays green. Compare
+    /// `refresh::spawn`, which was made fallible and so has its call site
+    /// enforced by the compiler; that is the strong form and this is not
+    /// available to it, because a validator that returns a `String` the
+    /// caller may simply ignore has no type-level hold on being used.
     #[test]
     fn an_unusable_attestation_header_is_refused_at_startup() {
+        let src = include_str!("gateway.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("fn main"),
+            "the scanned region does not reach main"
+        );
+        assert!(
+            non_test.contains("valid_header_name(&cli.attestation_header)"),
+            "main no longer validates the attestation header name"
+        );
+        assert!(
+            !non_test.contains("HeaderSource::new(&cli.attestation_header)"),
+            "main passes the raw command-line value straight to HeaderSource, \
+             bypassing validation"
+        );
+
         for bad in ["x attestation", "x:attestation", "", "x\nattestation"] {
             assert!(
                 valid_header_name(bad).is_err(),

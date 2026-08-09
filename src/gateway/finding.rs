@@ -37,6 +37,19 @@
 //! checkmark is a pass signal no reworded parenthetical can cancel out.
 //! `an_unverified_line_carries_no_checkmark` pins this.
 //!
+//! # A set size out of an almost-empty epoch is not a measurement
+//!
+//! `set_size` cannot exceed `total_sessions`, so an observation taken just
+//! after a salt rotation reports a small set no matter how large the real
+//! anonymity set is. `1 of 1` is the degenerate case and reads exactly like
+//! the finding an operator most fears. Below [`MIN_MEANINGFUL_SESSIONS`],
+//! [`Finding::render`] therefore prints a `NOT EVIDENCE` line beside the
+//! number saying the set is bounded by the window's age rather than by the
+//! fleet. `refresh::MIN_SALT_ROTATION` defends the same collapse from the
+//! other side — it can see the configured interval but not the arrival rate,
+//! and this can see the arrival rate but not the interval; neither is
+//! sufficient alone.
+//!
 //! The anonymity block — the one place this module prints a number — is
 //! gated on **both** `observation.is_some()` *and* the verdict being
 //! `Verified`, not on either alone: an `Unverified` or `Invalid` finding has
@@ -130,6 +143,35 @@ pub struct Finding {
     pub observation: Option<Observation>,
 }
 
+/// Below this many sessions in the current salt epoch, a set size is an
+/// artifact of the epoch boundary rather than a measurement of anonymity, and
+/// [`Finding::render`] says so beside the number.
+///
+/// The reasoning, because the number is a judgement call and should be
+/// readable as one. `set_size` can never exceed `total_sessions` — a
+/// configuration cannot have been seen more often than anything has. So in an
+/// epoch holding N sessions, *every* configuration necessarily reports a set
+/// no larger than N, and the measurement cannot distinguish "this agent is
+/// nearly alone" from "the store was cleared a moment ago". The degenerate
+/// case is `1 of 1`, which reads as an anonymity set of one and is in fact no
+/// observation at all.
+///
+/// Ten, rather than two or a hundred, because it is the smallest corpus in
+/// which a set size can be anything but trivially small, and because the
+/// caveat should disappear as soon as the number starts carrying information
+/// — an operator who sees it on every finding will stop reading it. It is not
+/// derived from anything and is stated here as a choice.
+///
+/// This is the half of the collapse condition
+/// (`set_size ≈ rotation × arrival_rate`) that `refresh::MIN_SALT_ROTATION`
+/// cannot see. A one-second floor on the rotation says nothing about a
+/// gateway taking one request a minute, where a perfectly legal
+/// sixty-second epoch still yields `1 of 1` forever. The arrival rate is
+/// invisible to the configuration and plainly visible right here, in the
+/// observation itself, which is why the second defence lives at the renderer
+/// and needs no new knob.
+pub const MIN_MEANINGFUL_SESSIONS: u64 = 10;
+
 /// The platform names `verify::tcb_config_from_td10`'s callers actually
 /// produce, in the words an operator reads.
 fn platform_display(p: &Platform) -> &'static str {
@@ -193,6 +235,22 @@ impl Finding {
                 obs.varying_attributes.join(", ")
             };
             let _ = writeln!(out, "  varying           {varying}");
+
+            // The number above is bounded by the epoch, not by the
+            // population, whenever the epoch is nearly empty. Said in the
+            // strongest terms the line has room for, because the failure this
+            // guards against is an operator reading `1 of 1` as a finding
+            // about their fleet rather than about the clock.
+            if obs.total_sessions < MIN_MEANINGFUL_SESSIONS {
+                let plural = if obs.total_sessions == 1 { "" } else { "s" };
+                let _ = writeln!(
+                    out,
+                    "  NOT EVIDENCE      only {} session{plural} measured since the last salt \
+                     rotation, so a set of {} is bounded by the age of this measurement window, \
+                     not by how many agents share this configuration",
+                    obs.total_sessions, obs.set_size
+                );
+            }
         }
 
         match &self.binding {
@@ -556,6 +614,124 @@ mod tests {
         // case where they must appear.
         assert!(out.contains("anonymity set"), "{out}");
         assert!(out.contains("varying"), "{out}");
+    }
+
+    /// The degenerate observation, and the thing it must never be mistaken
+    /// for. `1 of 1` is what a freshly-rotated store reports for a platform
+    /// nobody has a problem with, and it is indistinguishable — as a number —
+    /// from an agent genuinely alone on its configuration.
+    #[test]
+    fn a_set_out_of_an_almost_empty_epoch_is_labelled_as_not_evidence() {
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Bound,
+            observation: Some(Observation {
+                set_size: 1,
+                total_sessions: 1,
+                distinct_configs: 1,
+                varying_attributes: vec![],
+            }),
+        };
+        let out = f.render();
+        // Content, not presence. A caveat that appears but says something
+        // vague is a caveat an operator scrolls past.
+        assert!(out.contains("NOT EVIDENCE"), "{out}");
+        assert!(
+            out.contains("only 1 session measured since the last salt rotation"),
+            "the caveat must name how thin the corpus actually is: {out}"
+        );
+        assert!(
+            out.contains("bounded by the age of this measurement window"),
+            "the caveat must say what the number is bounded by: {out}"
+        );
+        assert!(
+            out.contains("not by how many agents share this configuration"),
+            "the caveat must say what the number is *not*: {out}"
+        );
+        // ...and the number itself is still printed. Suppressing it would
+        // hide the epoch-boundary artifact rather than explain it, and an
+        // operator watching the block appear and disappear learns less than
+        // one reading a caveated number.
+        assert!(out.contains("1 of 1 sessions"), "{out}");
+    }
+
+    /// The other side of the same gate: once the epoch holds enough sessions
+    /// for the number to carry information, the caveat must go away. A
+    /// caveat on every finding is a caveat nobody reads.
+    #[test]
+    fn a_healthy_epoch_carries_no_caveat() {
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Bound,
+            observation: Some(obs(47, 1847)),
+        };
+        let out = f.render();
+        assert!(!out.contains("NOT EVIDENCE"), "{out}");
+        assert!(out.contains("47 of 1847 sessions"), "{out}");
+    }
+
+    /// The boundary, pinned exactly, and the plural. Written against
+    /// `MIN_MEANINGFUL_SESSIONS` on both sides so the two arms cannot drift
+    /// apart, and against a literal `9`/`10` so the threshold itself cannot
+    /// wander without failing here.
+    #[test]
+    fn the_caveat_boundary_is_exact() {
+        let render_at = |total: u64| {
+            Finding {
+                verdict: verified(),
+                binding: SessionBinding::Bound,
+                observation: Some(obs(1, total)),
+            }
+            .render()
+        };
+        assert_eq!(MIN_MEANINGFUL_SESSIONS, 10);
+        assert!(
+            render_at(MIN_MEANINGFUL_SESSIONS - 1).contains("NOT EVIDENCE"),
+            "one session short of the threshold is still too thin"
+        );
+        assert!(
+            !render_at(MIN_MEANINGFUL_SESSIONS).contains("NOT EVIDENCE"),
+            "at the threshold the number carries information and the caveat goes"
+        );
+        // Plural agreement, because this line is read by a person.
+        assert!(render_at(1).contains("only 1 session measured"));
+        assert!(render_at(2).contains("only 2 sessions measured"));
+    }
+
+    /// The caveat belongs to the anonymity block, so it must never appear
+    /// where the block does not — an `Unverified` finding has no number to
+    /// caveat, and a `NOT EVIDENCE` line beside no evidence at all reads as
+    /// though something was measured.
+    #[test]
+    fn the_caveat_never_appears_without_a_number_to_caveat() {
+        for verdict in [
+            QuoteVerdict::Unverified {
+                why: "no collateral cached for FMSPC b0c06f000000 yet".into(),
+            },
+            QuoteVerdict::Invalid {
+                reason: "signature check failed".into(),
+            },
+        ] {
+            let f = Finding {
+                verdict,
+                binding: SessionBinding::Bound,
+                // Attached anyway: `Finding`'s fields are `pub`, so this
+                // combination is constructible even though `Pipeline` never
+                // produces it.
+                observation: Some(obs(1, 1)),
+            };
+            let out = f.render();
+            assert!(!out.contains("NOT EVIDENCE"), "{out}");
+            assert!(!out.contains("anonymity set"), "{out}");
+        }
+
+        // ...and likewise for a verified finding with no observation at all.
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        assert!(!f.render().contains("NOT EVIDENCE"));
     }
 
     /// The gap between header transport and RA-TLS is a finding, not a
