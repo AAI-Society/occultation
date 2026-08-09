@@ -27,7 +27,30 @@
 //! The salt (`Store::salt`) rotates on `rotation`, driven by
 //! [`LinkabilityMeter::rotate_if_due`]. Rotation clears both structures, so
 //! correlation ages out by construction rather than by an operator
-//! remembering to purge anything.
+//! remembering to purge anything. The salt only ever defends a *partial*
+//! disclosure, though — it is worth being honest about the limit rather
+//! than overselling it. It lives in the same `Store` as `counts` and
+//! `marginals`, so anyone who can read one can read the other and the
+//! config space is small enough to enumerate offline regardless; it is
+//! also a pure function of the `seed` passed to [`LinkabilityMeter::new`],
+//! so a seed sourced from a config file rather than real randomness makes
+//! the salt derivable from that config alone. What the salt actually buys:
+//! `counts`/`marginals` leaking *without* `salt` (a log line, a partial
+//! backup, one file copied but not the other) cannot be joined against an
+//! offline guess of which configurations were seen, and two rotation
+//! epochs — or two independently seeded meters — never collide on the same
+//! key for the same configuration. How `new`'s seed is sourced matters
+//! precisely because of that second property.
+//!
+//! Between rotations, `counts` and `marginals` grow without bound: nothing
+//! here caps how many distinct configurations or attribute values get
+//! tracked. Verified quotes bound the *shape* of what reaches
+//! [`LinkabilityMeter::observe`], but not every field is platform-fixed —
+//! `td_attributes` and `xfam` are set at TD creation — so a source able to
+//! mint many distinct quotes before the next rotation can grow both maps
+//! arbitrarily in the meantime. The rotation interval is the only bound
+//! this module provides; choosing it is choosing a memory ceiling as well
+//! as a correlation window.
 //!
 //! An example configuration, using real DCAP attribute keys rather than
 //! invented ones (a TDX 1.0 platform's `fmspc` and `tee_tcb_svn` are two of
@@ -38,10 +61,11 @@
 //!
 //! Fail-open binds this module too: [`LinkabilityMeter::observe`] and
 //! [`LinkabilityMeter::rotate_if_due`] never panic on any input, and a
-//! poisoned lock is recovered rather than propagated, the same choice
-//! `collateral::recover` makes and for the same reason — both critical
-//! sections here are simple map mutations with no observable intermediate
-//! state, so there is no torn state to recover into.
+//! poisoned lock is recovered rather than propagated. Unlike the
+//! collateral cache's lock, these critical sections are multi-step — see
+//! `recover`'s doc comment for what that means for a torn write, and why
+//! `rotate_if_due` clears its maps before it installs a new salt rather
+//! than after.
 
 use crate::bls::octets;
 use crate::gateway::verify::TcbConfig;
@@ -86,15 +110,29 @@ pub struct LinkabilityMeter {
 
 /// Recover a lock guard even if a prior holder panicked while holding it.
 ///
-/// Fail-open binds this module absolutely, the same as the collateral
-/// cache's `recover`: no lock state may panic it. Every critical section
-/// below is a single map mutation or a single clear-and-reset — there is no
-/// multi-step update with an observable intermediate state, so there is no
-/// torn state a recovered guard could expose. The worst a poisoned-then-
-/// recovered store can do is under- or over-count by whatever the panicking
-/// caller had already applied, which is a measurement gap, not a security
-/// hole — this module's whole output is a measurement, and a fail-open
-/// gateway forwards the request either way.
+/// Fail-open binds this module absolutely: no lock state may panic it. But
+/// unlike the collateral cache's `recover` — whose critical sections really
+/// are one `HashMap` operation each — this module's are not. `observe` is
+/// entry-then-increment, a second counter increment, an N-iteration
+/// marginals loop, then a length read and a marginals scan; `rotate_if_due`
+/// is several sequential writes. Both have observable intermediate states,
+/// so a panic partway through can leave a torn `Store` for whoever recovers
+/// the poisoned lock next. That sentence is not the collateral cache's — it
+/// would be false there and it is true here, which is exactly why it is
+/// written out rather than assumed to transfer.
+///
+/// Recovery is still the right call. The retained state is a measurement,
+/// not a security decision: a torn count under- or over-reports a set size
+/// rather than granting or denying anything, and a fail-open gateway
+/// forwards the request regardless of what this module measured. The one
+/// place a tear could matter more than that is `rotate_if_due`, where a
+/// half-finished rotation could otherwise leave pre-rotation `counts` or
+/// `marginals` alive under a *post*-rotation salt — stale correlation
+/// surviving the very operation whose job is aging it out. Its body clears
+/// before it installs the new salt for exactly this reason, so any tear
+/// there only ever leaves the store *more* cleared than intended, which is
+/// the safe direction for a module whose failure mode must always be
+/// "measures less", never "correlates more".
 fn recover<T>(result: Result<T, PoisonError<T>>) -> T {
     result.unwrap_or_else(|poisoned| {
         log::warn!(
@@ -177,12 +215,19 @@ impl LinkabilityMeter {
         if s.rotated.elapsed() < self.rotation {
             return;
         }
-        let mut seed = recover(self.seed.lock());
-        *seed = seed.wrapping_add(1);
-        s.salt = derive_salt(*seed, s.total);
+        // Clear before installing the new salt, not after. `epoch` is
+        // captured first because clearing zeroes `total`, and `derive_salt`
+        // still needs the *pre*-rotation session count to keep successive
+        // epochs from a fixed seed apart. See `recover`'s doc comment for
+        // why this ordering — not the reverse — is the direction that keeps
+        // a torn write safe.
+        let epoch = s.total;
         s.counts.clear();
         s.marginals.clear();
         s.total = 0;
+        let mut seed = recover(self.seed.lock());
+        *seed = seed.wrapping_add(1);
+        s.salt = derive_salt(*seed, epoch);
         s.rotated = Instant::now();
     }
 
@@ -311,8 +356,14 @@ mod tests {
 
     #[test]
     fn the_stored_hash_does_not_reveal_the_configuration() {
-        // Salted, so an operator holding the store cannot enumerate plausible
-        // TCB configurations offline and recover which ones were seen.
+        // Not a defense against someone holding the whole store: `salt` is
+        // a field of the same `Store` as `counts`, and the config space is
+        // small enough to enumerate offline in a few thousand hashes
+        // regardless of salting. What this pins is narrower and still
+        // real: two different seeds (two meters, or two rotation epochs of
+        // one meter) must key the same configuration differently, so a
+        // *partial* disclosure — `counts` without `salt`, one epoch's
+        // snapshot without another's — cannot be joined across seeds.
         let a = LinkabilityMeter::new(Duration::from_secs(3600), 1);
         let b = LinkabilityMeter::new(Duration::from_secs(3600), 2);
         let c = cfg(&[("tdx_module", "1.5.05")]);
@@ -328,15 +379,110 @@ mod tests {
         let m = LinkabilityMeter::new(Duration::from_nanos(1), 7);
         let c = cfg(&[("tdx_module", "1.5.05")]);
         m.observe(&c);
+        let (key_before, _) = m.snapshot_for_test().into_iter().next().unwrap();
         std::thread::sleep(Duration::from_millis(2));
         m.rotate_if_due();
         // History is gone: the same configuration is a fresh set of one.
         assert_eq!(m.observe(&c).set_size, 1);
+        // That alone does not prove the *salt* rotated — `counts.clear()`
+        // on its own delivers the same `set_size == 1`, salt untouched.
+        // This test is named for the salt, so it has to look at the salt:
+        // the same configuration must now key to a genuinely different
+        // hash than it did before rotation.
+        let (key_after, _) = m.snapshot_for_test().into_iter().next().unwrap();
+        assert_ne!(
+            key_before, key_after,
+            "the salt must actually change across a rotation, not just the counts"
+        );
     }
 
     #[test]
     fn an_empty_configuration_is_an_observation_not_a_panic() {
         assert_eq!(meter().observe(&cfg(&[])).set_size, 1);
+    }
+
+    /// `rotate_if_due` must reset its own clock, not just clear the maps.
+    /// Without resetting `rotated`, the *next* call still compares against
+    /// the same stale timestamp and rotates again — and again, forever.
+    /// If Tasks 6/7 call this once per request (the obvious wiring), every
+    /// request after the first-ever rotation would wipe the store before
+    /// its own observation lands, permanently reporting `set_size: 1,
+    /// distinct_configs: 1` — the tool whose job is flagging low diversity
+    /// silently claiming maximum anonymity forever. That is the dangerous
+    /// direction, not a merely-annoying one.
+    #[test]
+    fn rotate_if_due_resets_the_clock_so_the_next_call_is_not_immediately_due() {
+        let m = LinkabilityMeter::new(Duration::from_millis(50), 7);
+        let c = cfg(&[("tdx_module", "1.5.05")]);
+        m.observe(&c);
+        std::thread::sleep(Duration::from_millis(60));
+        m.rotate_if_due();
+        assert_eq!(
+            m.observe(&c).set_size,
+            1,
+            "the first, genuinely-due rotation must have cleared history"
+        );
+        // Called again immediately: the interval has not elapsed a second
+        // time, so this must be a no-op. If `rotated` was never reset above,
+        // this call sees the same stale timestamp and rotates again.
+        m.rotate_if_due();
+        assert_eq!(
+            m.observe(&c).set_size,
+            2,
+            "a second rotate_if_due right after the first must not clear \
+             again — otherwise every call clears, forever"
+        );
+    }
+
+    /// `marginals` (and the epoch counter `total` that feeds `derive_salt`)
+    /// must be cleared on rotation too, not just `counts`. If the old,
+    /// pre-rotation marginal entry for a value survives, it sits alongside
+    /// a *new* entry — salted under the new salt — for what is literally
+    /// the same string, and the attribute is misreported as varying when
+    /// nothing varied at all. `total` not resetting would similarly let a
+    /// session count creep across epochs that are supposed to be
+    /// independent.
+    #[test]
+    fn rotation_clears_marginals_so_a_repeated_value_does_not_look_like_variation() {
+        let m = LinkabilityMeter::new(Duration::from_nanos(1), 7);
+        let c = cfg(&[("tdx_module", "1.5.05")]);
+        m.observe(&c);
+        std::thread::sleep(Duration::from_millis(2));
+        m.rotate_if_due();
+        let o = m.observe(&c);
+        assert_eq!(
+            o.varying_attributes,
+            Vec::<String>::new(),
+            "a single value, repeated across a rotation, must not look like variation"
+        );
+        assert_eq!(
+            o.total_sessions, 1,
+            "a rotation starts a fresh epoch; sessions do not carry over"
+        );
+    }
+
+    /// The module's whole thesis — "exactly two structures, and no third"
+    /// — is otherwise only a comment. Exhaustive destructuring (no `..`)
+    /// means a field added to `Store` fails to compile right here instead
+    /// of silently becoming a fourth structure `snapshot_for_test` was
+    /// never asked to check. This is the same idiom `verify.rs` calls
+    /// structural rather than a matter of discipline.
+    #[test]
+    fn the_store_holds_exactly_these_fields_and_no_others() {
+        let s = Store {
+            salt: [0u8; 32],
+            rotated: Instant::now(),
+            counts: HashMap::new(),
+            marginals: BTreeMap::new(),
+            total: 0,
+        };
+        let Store {
+            salt: _,
+            rotated: _,
+            counts: _,
+            marginals: _,
+            total: _,
+        } = s;
     }
 
     /// The length-framing guard, made concrete rather than argued in a
@@ -360,6 +506,25 @@ mod tests {
         assert_eq!(
             o2.distinct_configs, 2,
             "{{ab: c}} and {{a: bc}} must be counted as two configurations, not one"
+        );
+
+        // The attribute *name* has to enter the fingerprint too, not just
+        // its value — dropping the key from the preimage would merge
+        // `{"a": "x"}` and `{"b": "x"}`, which share every value but not
+        // which attribute carries it, into a single set.
+        let o3 = m.observe(&cfg(&[("a", "x")]));
+        let o4 = m.observe(&cfg(&[("b", "x")]));
+        assert_eq!(
+            o3.set_size, 1,
+            "a fresh key/value pair is its own fresh set"
+        );
+        assert_eq!(
+            o4.set_size, 1,
+            "the same value under a different key must still be a fresh set"
+        );
+        assert_eq!(
+            o4.distinct_configs, 4,
+            "four distinct key/value maps observed so far must count as four configurations"
         );
     }
 
@@ -401,5 +566,40 @@ mod tests {
         // The interval has not elapsed, so the set must still be growing,
         // not restarting at one.
         assert_eq!(m.observe(&c).set_size, 2);
+    }
+
+    /// A minimal analogue of `verify.rs`'s formatter ban, scoped to this
+    /// module's one real risk: a `Debug` (or pretty-`Debug`) rendering of
+    /// anything holding `Store::salt` or a salted key reaching a log line
+    /// would write out exactly the secret this module's unlinkability
+    /// guarantee depends on. The non-test half of this module has exactly
+    /// one formatting call today — `log::warn!` in `recover`, with no
+    /// format argument at all — so this guard is free and cannot
+    /// false-positive. Every Rust debug format spec ends in a question
+    /// mark immediately before its closing brace, so a search for that
+    /// two-character tail catches `{:?}`, `{v:?}`, `{:#?}` and `{:x?}`
+    /// alike without needing to enumerate them. If a debug rendering is
+    /// ever genuinely needed here, prove by test that it excludes `salt`
+    /// and every stored key rather than relaxing this.
+    #[test]
+    fn nothing_in_the_non_test_module_reaches_a_debug_formatter() {
+        let src = include_str!("meter.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            src.matches(MARKER).count(),
+            1,
+            "ambiguous test module boundary"
+        );
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("fn rotate_if_due") && non_test.contains("fn observe"),
+            "the scanned region does not reach the implementation, so this \
+             guard would pass against a truncated string"
+        );
+        let tail_marker = "?}";
+        assert!(
+            !non_test.contains(tail_marker),
+            "a Debug-style format spec appears in this module's non-test code"
+        );
     }
 }
