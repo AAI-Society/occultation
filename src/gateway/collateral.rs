@@ -419,7 +419,8 @@ impl CollateralCache {
     /// latency beyond the HTTP client's timeout. It is **not** safe to call
     /// from the request path — Task 1's measurement hook already runs after
     /// the response has been forwarded, on an owned snapshot, precisely so a
-    /// slow hook cannot delay a reply; but hyper still does not write that
+    /// slow hook is not also a slow *upstream*; but that only relocates the
+    /// cost, because hyper still does not write that
     /// response until the hook's future resolves, so anything slow here adds
     /// straight to time-to-first-byte and occupies a worker for as long as
     /// it runs. `refresh` is the named reason that constraint exists: it

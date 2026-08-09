@@ -23,9 +23,9 @@ pub enum ProxyError {
 
 /// What a hook sees: an owned copy of the head, never the live request.
 ///
-/// Owned so the hook can run *after* the forward, which is what makes a slow
-/// hook unable to delay a response. The body is deliberately absent — no
-/// measurement in this design needs it.
+/// Owned so the hook can run *after* the forward, which relocates the hook's
+/// cost rather than removing it — see [`Hooks`]. The body is deliberately
+/// absent: no measurement in this design needs it.
 #[derive(Clone, Debug)]
 pub struct RequestHead {
     pub method: hyper::Method,
@@ -53,8 +53,21 @@ impl RequestHead {
 /// or the meter and can be tested with neither.
 ///
 /// The hook runs *after* the forward (see `handle`), on an owned snapshot,
-/// never the live request — a hook is not on the path to the response, so a
-/// slow or blocking hook (a PCCS fetch, say) cannot stall one.
+/// never the live request. That ordering **relocates** the cost of a slow
+/// hook; it does not eliminate it. hyper does not write the response until
+/// the service future resolves, and the hook runs inside that future, so
+/// anything slow here still adds to time-to-first-byte and still occupies a
+/// worker for as long as it runs. What the reorder buys is that the hook's
+/// cost is paid after the upstream has already answered rather than before
+/// it is asked — and, because the snapshot is owned, that the hook cannot
+/// hold the live request open.
+///
+/// This is the premise the rest of the design rests on, not a caveat to it.
+/// It is why `collateral::refresh` may not be called from a hook, why
+/// `refresh.rs` exists to keep the fetch on a background task, and why
+/// `RefreshQueue::schedule` is a `try_send` that cannot block.
+/// `tests/gateway_failopen.rs`'s hanging-verifier case asserts the
+/// consequence directly: the client waits out the hook's 120 ms.
 ///
 /// Hook state must itself tolerate being observed mid-panic: `catch_unwind`
 /// in `handle` stops a panic from dropping the connection, but it does not
@@ -81,9 +94,14 @@ impl Hooks {
 ///
 /// The hook runs after `forward` resolves, on an owned `RequestHead`
 /// snapshotted before the request was consumed — never on the live request,
-/// and never ahead of the forward. `catch_unwind` bounds the panic; running
-/// the hook after the response is what bounds the *time* a slow or blocking
-/// hook can cost the request.
+/// and never ahead of the forward.
+///
+/// `catch_unwind` bounds the panic. Nothing here bounds the *time*: hyper
+/// does not write the response until this future resolves, so a slow hook is
+/// still time-to-first-byte the client pays, just paid after the upstream
+/// has answered instead of before it is asked. Keeping hook work cheap is
+/// therefore a live constraint on every caller — see [`Hooks`] and
+/// `refresh.rs`, which exists because of it.
 async fn handle(
     req: Request<Incoming>,
     upstream: hyper::Uri,
@@ -1126,6 +1144,57 @@ mod tests {
             "the shipped default is under the floor the command line enforces"
         );
         assert!(limits.max_connections >= 1);
+    }
+
+    /// Task 1's Important #2, which came back twice.
+    ///
+    /// A slow hook *does* delay the response — hyper writes nothing until the
+    /// service future resolves — and `refresh.rs`, `collateral.rs` and
+    /// `tests/gateway_failopen.rs` have always said so, the last of them by
+    /// asserting the client waits out 120 ms of hook work. This module said
+    /// the opposite in two doc comments and the README said it in a third,
+    /// and each round of review fixed the surface it was looking at while
+    /// the others carried on contradicting it.
+    ///
+    /// A lexical guard, because that is the shape of the recurrence: nobody
+    /// has ever got the *behaviour* wrong, only the sentence describing it,
+    /// and no behavioural test can fail on a sentence. Scoped to the
+    /// non-test half so this test may quote the phrases it forbids.
+    #[test]
+    fn no_surface_claims_the_hook_is_off_the_response_path() {
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        let src = include_str!("proxy.rs");
+        assert_eq!(src.matches(MARKER).count(), 1, "ambiguous test module");
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        assert!(
+            non_test.contains("async fn handle") && non_test.contains("pub struct Hooks"),
+            "the scanned region does not reach the two doc comments this \
+             guard exists to hold"
+        );
+
+        let readme = include_str!("../../README.md");
+        for (surface, text) in [("proxy.rs", non_test), ("README.md", readme)] {
+            for claim in ["cannot stall", "cannot delay", "unable to delay"] {
+                assert!(
+                    !text.contains(claim),
+                    "{surface} says a hook `{claim}` a response. It can: hyper \
+                     does not write the response until the service future \
+                     resolves, and tests/gateway_failopen.rs asserts the client \
+                     waits out the hook's 120ms. This is the third time"
+                );
+            }
+        }
+        // The positive half. Without it, deleting both doc comments outright
+        // would satisfy every assertion above.
+        assert!(
+            non_test.contains("does not write the response until"),
+            "the doc comments no longer state what the reorder actually buys, \
+             so the next reader has nothing to correct the intuition with"
+        );
+        assert!(
+            readme.contains("*after* the forward"),
+            "the README no longer distinguishes the forward from the response"
+        );
     }
 
     #[test]

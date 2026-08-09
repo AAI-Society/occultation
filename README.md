@@ -261,7 +261,7 @@ request is forwarded, unconditionally, before any measurement runs — a
 malformed quote, no quote, a revoked platform, a panicking verifier, all
 forwarded. `forward` and `handle` return `Result<_, Infallible>`, so no `?`
 and no `Err` can compile on the request path; the measurement hook runs
-*after* the response, on an owned snapshot, inside a `catch_unwind`; and every
+*after* the forward, on an owned snapshot, inside a `catch_unwind`; and every
 pipeline stage has its own guard so one broken component costs its own
 contribution and nothing else. `tests/gateway_failopen.rs` injects a fault at
 each stage and asserts the upstream still answers; `tests/gateway_hostile.rs`
