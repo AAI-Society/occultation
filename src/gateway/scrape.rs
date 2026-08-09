@@ -334,10 +334,19 @@ mod tests {
     /// File descriptors are a process resource. Half-open connections held
     /// against the metrics port exhaust the same table `proxy::run`'s
     /// `accept` draws from, so an unbounded scrape listener takes the fronted
-    /// API down without ever touching the proxy's port. Without this test the
-    /// `.timer(..)` call in `serve_on_with` could be deleted and every other
-    /// test in the crate would stay green — `proxy.rs`'s equivalent covers
-    /// only `proxy::run`.
+    /// API down without ever touching the proxy's port.
+    ///
+    /// This test catches the condition that shipped — a bare
+    /// `http1::Builder::new()`, no timer and no configured timeout, which
+    /// hyper degrades to no timeout at all. It is **partially vacuous**
+    /// against the narrower mutation of deleting only `.timer(..)`, and that
+    /// is worth writing down rather than discovering: hyper then panics on
+    /// the configured timeout, the task unwinds, the socket closes, and
+    /// `read_to_end` returns — so this passes in 0.01s against a baseline of
+    /// ~0.21s, and the honest signal is the *timing*, which nothing here
+    /// asserts. Three tests in `tests/gateway_hostile.rs` fail on that
+    /// mutation instead, so the crate does not go green; this test is simply
+    /// not the one that notices.
     #[tokio::test]
     async fn a_half_open_scrape_connection_is_closed_by_the_header_read_timeout() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -374,8 +383,90 @@ mod tests {
         );
     }
 
+    /// `proxy.rs`'s connection-cap test, mirrored — and it had to be, because
+    /// nothing held this listener's semaphore.
+    ///
+    /// `the_metrics_listener_ships_with_both_bounds_set` asserts the
+    /// *constant* (`64 >= 1`, `64 < 1024`) and never the enforcement, so
+    /// deleting the `Semaphore`, the `acquire_owned` block and the
+    /// `let _permit = permit;` from `serve_on_with` left the whole suite
+    /// green: 387 passing with the cap gone entirely. A bound nothing
+    /// exercises is a bound that will be deleted by the next person
+    /// simplifying this loop.
+    ///
+    /// Same shape as the proxy's for the same reasons — both halves in one
+    /// test, because "the scrape was served" passes for no cap at all and
+    /// "the scrape was delayed" passes for a listener that refused it.
+    #[tokio::test]
+    async fn the_metrics_connection_cap_delays_a_scrape_rather_than_refusing_it() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind the metrics listener");
+        let addr = listener.local_addr().expect("metrics local addr");
+        tokio::spawn(serve_on_with(
+            listener,
+            Arc::new(registry_with_one_verified_request()),
+            ConnectionLimits {
+                header_read_timeout: Duration::from_millis(800),
+                max_connections: 1,
+            },
+        ));
+
+        // Takes the single permit and holds it until its header-read timeout
+        // expires. Bound, so the socket is not closed early by a drop.
+        let mut idle = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect to the metrics listener");
+        idle.write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .expect("write a partial header block");
+        idle.flush().await.expect("flush the partial headers");
+        // Long enough that the accept loop has certainly taken the idle
+        // connection rather than racing the scrape below for the permit.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let started = std::time::Instant::now();
+        let response = tokio::time::timeout(Duration::from_secs(10), async {
+            let mut sock = tokio::net::TcpStream::connect(addr)
+                .await
+                .expect("connect for the queued scrape");
+            // `Connection: close` so hyper closes after responding and
+            // `read_to_end` returns without waiting out a keep-alive.
+            sock.write_all(b"GET /metrics HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("write the scrape request");
+            sock.flush().await.expect("flush the scrape request");
+            let mut buf = Vec::new();
+            sock.read_to_end(&mut buf).await.expect("read the response");
+            String::from_utf8_lossy(&buf).into_owned()
+        })
+        .await
+        .expect("the capped metrics listener never served the queued scrape");
+        let waited = started.elapsed();
+
+        assert!(
+            response.contains("200 OK"),
+            "a scrape from behind the cap must be answered, never refused: {response}"
+        );
+        assert!(
+            response.contains("gateway_requests_total"),
+            "and answered with the counters, not an empty 200: {response}"
+        );
+        assert!(
+            waited >= Duration::from_millis(300),
+            "the scrape was served in {waited:?}, so the cap of one was not \
+             enforced at all"
+        );
+    }
+
     /// The shipped bounds, since `serve_on` is what `src/bin/gateway.rs`
     /// calls and nothing above exercises the values it passes.
+    ///
+    /// Constants only — the *enforcement* of the cap is
+    /// `the_metrics_connection_cap_delays_a_scrape_rather_than_refusing_it`'s
+    /// job, and for one round this test was mistaken for holding it.
     #[test]
     fn the_metrics_listener_ships_with_both_bounds_set() {
         assert_eq!(

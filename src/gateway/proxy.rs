@@ -163,10 +163,23 @@ pub const MIN_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// A bound rather than a rate limit: rate limiting is a stated non-goal, and
 /// this does not refuse anything. Past the cap the accept loop simply stops
 /// accepting, so further connections wait in the kernel's listen backlog and
-/// are served as earlier ones finish. Its job is to keep the process inside
-/// its file-descriptor budget — each proxied connection costs one descriptor
-/// here and one more to the upstream — so that a burst of connections cannot
-/// turn into `accept: Too many open files` for everybody.
+/// are served as earlier ones finish.
+///
+/// Its job is to keep the process's descriptor use *bounded and knowable*
+/// rather than unbounded. Be honest about what it does not do: each proxied
+/// connection costs one descriptor here and one more to the upstream, so a
+/// burst that fills this cap wants roughly 2,100 descriptors, and on a host
+/// left at the common `ulimit -n 1024` the accept loop still reaches `Too
+/// many open files` at about half the cap. That is strictly better than the
+/// unbounded case — the ceiling is finite, and it recovers, because
+/// [`DEFAULT_HEADER_READ_TIMEOUT`] means held connections drain — but this
+/// number alone does not guarantee the error never appears.
+///
+/// 1024 is a judgement call and not derived. It cannot be derived here: the
+/// process's real limit is `RLIMIT_NOFILE`, which this crate cannot read
+/// without a `libc` dependency it does not have and would not take under
+/// `#![forbid(unsafe_code)]`. An operator who knows their limit should set
+/// `--max-connections` to somewhat under half of it; the README says so.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 
 /// What the accept loop enforces per connection.
@@ -982,14 +995,26 @@ mod tests {
     /// The one that was demonstrated against the built binary, and the
     /// reason `DEFAULT_HEADER_READ_TIMEOUT` exists.
     ///
-    /// hyper defaults `h1_header_read_timeout` to `Some(30s)` and then
-    /// silently does not enforce it when no `hyper::rt::Timer` is installed —
-    /// the `warn!` it emits about that needs hyper's `tracing` feature, which
-    /// is not enabled here, so there is no output either. The observable
-    /// consequence is this test: with the `.timer(..)` call deleted from
-    /// `run`, the read below never completes and this fails on the outer
-    /// timeout. It is the *only* test in this crate that distinguishes a
-    /// header-read timeout that is configured from one that is enforced.
+    /// hyper's two behaviours here are not the same, and which one this test
+    /// catches is worth stating precisely, because the first draft of this
+    /// comment got it backwards.
+    ///
+    /// - `Dur::Default(Some(30s))` with no timer installed — that is,
+    ///   *neither* `.timer(..)` nor `.header_read_timeout(..)` called, which
+    ///   is what `http1::Builder::new()` alone gives you — logs a `warn!` and
+    ///   silently enforces nothing. The `warn!` is `tracing`-gated and
+    ///   `Cargo.toml` enables only `["server", "client", "http1"]`, so there
+    ///   is no output either. **This is the condition that shipped, and the
+    ///   condition this test catches:** revert `run` to a bare
+    ///   `http1::Builder::new()` and the read below never completes, failing
+    ///   on the outer timeout in 5s.
+    /// - `Dur::Configured(Some(_))` with no timer *panics*
+    ///   (`common/time.rs`: "timeout `header_read_timeout` set, but no timer
+    ///   set"). So deleting only the `.timer(..)` line does not reproduce the
+    ///   defect at all — it makes every connection task panic, which this
+    ///   test is the one connection-level proxy test to *survive* (the
+    ///   unwind closes the socket, so the read returns and the assertion
+    ///   holds). Ten others fail loudly instead. Measured, not assumed.
     ///
     /// The outer timeout is twenty-five times the configured one, so it
     /// cannot fail for scheduling reasons — the two are not close.
@@ -1032,10 +1057,23 @@ mod tests {
     /// have returned.
     ///
     /// It is also the test that pins the timeout and the cap as one
-    /// mechanism. Remove the semaphore and the second connection is served
-    /// immediately, failing the wait assertion. Remove the `.timer(..)` and
-    /// the idle connection never releases its permit, so the second is never
-    /// served at all and the whole test hangs.
+    /// mechanism, in the sense that both are needed for it to pass — though
+    /// not for the reason the first version of this comment gave.
+    ///
+    /// - Remove the semaphore and the second connection is served
+    ///   immediately (measured: 3.7 ms), failing the wait assertion.
+    /// - Remove the `.timer(..)` and hyper panics on the configured timeout
+    ///   before the idle connection is ever read from. That does **not**
+    ///   wedge the permit — the unwind drops it at once, which is property 2
+    ///   of `run`'s doc comment working exactly as written — so this fails
+    ///   fast rather than hanging, on the queued connection being reset by
+    ///   its own panicking task.
+    ///
+    /// The condition that actually shipped, a bare `http1::Builder::new()`
+    /// with no timer and no configured timeout, is caught by
+    /// `a_half_open_connection_is_closed_by_the_header_read_timeout`: the
+    /// idle connection then really does hold its permit forever and this
+    /// test fails on its ten-second outer timeout.
     #[tokio::test]
     async fn the_connection_cap_delays_a_new_connection_rather_than_refusing_it() {
         let upstream = spawn_echo_upstream().await;

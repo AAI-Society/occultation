@@ -599,11 +599,18 @@ mod tests {
     /// The banned list is the one `verify.rs`, `refresh.rs`, `scrape.rs` and
     /// `pipeline.rs` all carry, rather than the `?}` this used to ban alone.
     /// The module that *holds the salt* had the weakest of the five guards:
-    /// `dbg!(&s.salt)` writes it to stderr, contains no `?}`, and passed
-    /// here while failing in all four of its siblings. The tail check is
-    /// theirs too, and for the same reason — `split(..).next()` discards
-    /// everything after the test module as silently as it discards a
-    /// truncated head.
+    /// `dbg!(&self.seed)` writes it to stderr, contains no `?}`, and passed
+    /// here while failing in all four of its siblings.
+    ///
+    /// The tail check comes from `verify.rs` and `pipeline.rs`, which are the
+    /// only two that had one — `refresh.rs` and `scrape.rs` do not, and the
+    /// review finding that prompted this said "its three siblings", which was
+    /// off by one. So this is now the *strongest* of the five rather than a
+    /// module catching up: it bans the full token list and checks that
+    /// nothing sits after the test module, where `split(..).next()` would
+    /// discard it as silently as it discards a truncated head. The two
+    /// modules still missing the tail check are a known gap, not a claim
+    /// made here.
     #[test]
     fn nothing_in_the_non_test_module_reaches_a_debug_formatter() {
         let src = include_str!("meter.rs");

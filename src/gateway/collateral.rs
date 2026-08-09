@@ -689,9 +689,13 @@ mod tests {
     /// CRLs out of [`declared_expiry`] left the reported defect live for
     /// fifteen minutes per collateral cycle rather than closing it.
     const REAL_PCK_CRL_NEXT_UPDATE: u64 = 1_752_919_235;
-    /// `Apr  3 11:21:57 2026 GMT`, and a `GeneralizedTime` rather than a
-    /// `UTCTime`, so the two DER time encodings are both exercised by the
-    /// fixture rather than only by hand-written bytes.
+    /// `Apr  3 11:21:57 2026 GMT`. Both fixture CRLs encode their times as
+    /// `UTCTime` — `openssl asn1parse` gives `UTCTIME :260403112157Z` here —
+    /// so the fixture exercises only that arm, and `GeneralizedTime` is
+    /// covered by the hand-written bytes in
+    /// `the_der_reader_refuses_malformed_input_rather_than_panicking`. An
+    /// earlier version of this comment claimed the fixture covered both,
+    /// which it does not.
     const REAL_ROOT_CA_CRL_NEXT_UPDATE: u64 = 1_775_215_317;
 
     /// The parse, pinned against the real bundle and against the *earliest*
@@ -734,10 +738,12 @@ mod tests {
 
     /// The DER reader, against inputs the fixture cannot supply.
     ///
-    /// The fixture exercises the happy path for both time encodings; this
-    /// covers what a hostile or truncated provisioning service could send.
-    /// None of it may panic — this runs at insert time on bytes the gateway
-    /// did not author, and a panic here poisons the refresher's loop.
+    /// The fixture exercises the happy path for `UTCTime` only — both its
+    /// CRLs use that encoding — so `GeneralizedTime`, the two-digit-year
+    /// pivot, a CRL with no `nextUpdate`, and everything a hostile or
+    /// truncated provisioning service could send are covered here. None of
+    /// it may panic: this runs at insert time on bytes the gateway did not
+    /// author, and a panic here poisons the refresher's loop.
     #[test]
     fn the_der_reader_refuses_malformed_input_rather_than_panicking() {
         let real = real_collateral();
@@ -752,8 +758,45 @@ mod tests {
         assert_eq!(crl_next_update_secs(&[0x30, 0x7f, 0x00]), None);
         // Indefinite length: legal BER, forbidden in DER, refused here.
         assert_eq!(crl_next_update_secs(&[0x30, 0x80, 0x00, 0x00]), None);
-        // A well-formed CRL shape with only one time in it — `thisUpdate`
-        // and no `nextUpdate` — must not report `thisUpdate` as the window.
+        // A well-formed CRL with only one time in it — `thisUpdate` and no
+        // `nextUpdate`, which RFC 5280 permits — must report *no* window
+        // rather than mistaking `thisUpdate` for one. `crl_next_update_secs`
+        // reasons about this in its doc; for one round it was reasoned about
+        // and not tested, and "take the second Time" is exactly the sort of
+        // rule that quietly becomes "take the first" under a simplification.
+        //
+        // Built by hand, because no such CRL exists in the fixtures.
+        // `CertificateList ::= SEQUENCE { TBSCertList SEQUENCE { signature
+        // SEQUENCE {}, issuer SEQUENCE {}, thisUpdate Time [, nextUpdate
+        // Time] } }` — `version` is optional and omitted, and everything
+        // after `nextUpdate` is too.
+        fn crl_with_times(times: &[&[u8]]) -> Vec<u8> {
+            let mut tbs = vec![0x30, 0x00, 0x30, 0x00]; // signature, issuer
+            for t in times {
+                tbs.push(DER_UTC_TIME);
+                tbs.push(t.len() as u8);
+                tbs.extend_from_slice(t);
+            }
+            let mut tbs_tlv = vec![0x30, tbs.len() as u8];
+            tbs_tlv.extend_from_slice(&tbs);
+            let mut out = vec![0x30, tbs_tlv.len() as u8];
+            out.extend_from_slice(&tbs_tlv);
+            out
+        }
+        assert_eq!(
+            crl_next_update_secs(&crl_with_times(&[b"250619100035Z"])),
+            None,
+            "a CRL carrying only a thisUpdate declares no expiry; reporting \
+             thisUpdate as one would make every such bundle instantly stale"
+        );
+        // The positive control for that builder — the same shape *with* a
+        // nextUpdate must yield the second time, not the first.
+        assert_eq!(
+            crl_next_update_secs(&crl_with_times(&[b"250619100035Z", b"250719100035Z"])),
+            Some(REAL_PCK_CRL_NEXT_UPDATE),
+            "the window is the second Time in the TBSCertList, not the first"
+        );
+
         assert_eq!(
             der_time_to_unix_secs(DER_UTC_TIME, b"250719100035Z"),
             Some(REAL_PCK_CRL_NEXT_UPDATE)

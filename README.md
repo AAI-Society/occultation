@@ -4,7 +4,7 @@
 
 <p align="center">
   <img alt="Rust 2021" src="https://img.shields.io/badge/rust-2021%20%C2%B7%201.90%2B-CFFF04?style=flat-square&labelColor=0A0A0A">
-  <img alt="387 tests" src="https://img.shields.io/badge/tests-387%20passing-CFFF04?style=flat-square&labelColor=0A0A0A">
+  <img alt="388 tests" src="https://img.shields.io/badge/tests-388%20passing-CFFF04?style=flat-square&labelColor=0A0A0A">
   <img alt="Apache 2.0" src="https://img.shields.io/badge/licence-Apache--2.0-CFFF04?style=flat-square&labelColor=0A0A0A">
   <img alt="paper included" src="https://img.shields.io/badge/paper-included-CFFF04?style=flat-square&labelColor=0A0A0A">
 </p>
@@ -212,7 +212,7 @@ ignore CI.
 ```console
 $ git clone https://github.com/Task-force-for-AI-agents-in-Healthcare/occultation
 $ cd occultation
-$ cargo test                                   # 387 tests, incl. the four acceptance tests
+$ cargo test                                   # 388 tests, incl. the four acceptance tests
 $ cargo run --release -- bench --composed      # the correction
 $ cargo run --release -- pool --burst 5000     # exhaustion, and what it leaks
 $ cargo run --release -- anonymity --fleet examples/fleet-drifted.toml
@@ -277,11 +277,19 @@ connection that never finishes sending its headers: without it, one client
 holding half-open sockets exhausts the process's file descriptors and the
 fronted API becomes unreachable to everybody, which was demonstrated against
 this binary. `--max-connections` (1024) caps how many connections are served
-at once, so a burst stays inside that descriptor budget — the permit is taken
-*before* `accept()`, so an over-cap connection waits in the kernel's listen
-backlog and is served as earlier ones finish, never closed or rejected.
-**Neither is a rate limit**, which remains a non-goal: nothing here looks at
-who is connecting or how often.
+at once, so descriptor use is bounded and knowable instead of unbounded — the
+permit is taken *before* `accept()`, so an over-cap connection waits in the
+kernel's listen backlog and is served as earlier ones finish, never closed or
+rejected. **Neither is a rate limit**, which remains a non-goal: nothing here
+looks at who is connecting or how often.
+
+The default cap is a judgement call, not a derivation, and it does not by
+itself guarantee you never see `Too many open files`: each proxied connection
+costs a descriptor inbound and another to the upstream, so a full burst wants
+roughly 2,100, and a host left at `ulimit -n 1024` reaches the limit at about
+half the cap. The gateway cannot read its own `RLIMIT_NOFILE` without a
+`libc` dependency it does not carry. If you know your limit, set
+`--max-connections` to somewhat under half of it.
 
 ### The verification is real; `Unverified` is not a soft yes
 
