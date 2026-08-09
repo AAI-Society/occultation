@@ -8,9 +8,24 @@
 //! [`Observation`] — the three types Task 4's verifier boundary and Task 5's
 //! meter already hand back with the hardware serial destroyed. Nothing in
 //! this module ever touches a `dcap_qvl` report, so there is no field here
-//! that *could* carry it: `the_json_form_never_contains_the_ppid_or_a_config_hash`
+//! that *could* carry it: `the_json_form_names_neither_the_hardware_identifier_nor_a_salted_key`
 //! and `the_rendered_finding_also_contains_no_ppid_text` prove the two output
 //! paths (`to_json`, `render`) agree with that, rather than assuming it.
+//!
+//! That is a narrower claim than it sounds, and the difference is the whole
+//! of [`Finding::to_json`]'s privacy story. The two output paths do **not**
+//! disclose the same thing. `render` prints platform prose, the status word
+//! and varying attribute *names*; `to_json` serialises the verdict, and
+//! `QuoteVerdict::Verified` carries `config: TcbConfig` — the full platform
+//! attribute map, in cleartext, one record per request. A JSON stream
+//! retained anywhere is therefore a timestamped platform fingerprint per
+//! request, joinable against whatever identifier the retaining system
+//! already has. That is deliberate (the JSON is the machine-readable
+//! surface, and narrowing it silently would be worse), it is latent rather
+//! than shipped (the binary calls `render`; no production caller of
+//! `to_json` exists), and it is stated plainly in the README beside the
+//! `NOT EVIDENCE` caveat. See
+//! `the_json_form_does_carry_the_cleartext_configuration_and_the_readme_says_so`.
 //! `Finding` deliberately derives neither `Debug` nor `Serialize` — both
 //! `to_json` and `render` are written by hand against the three permitted
 //! fields, so the escape hatch a blanket derive would open (a future field
@@ -962,8 +977,24 @@ mod tests {
         }
     }
 
+    /// Two literals, and only two: the string `"ppid"` and the string
+    /// `"fingerprint"`.
+    ///
+    /// The name matters because the old one — `..._never_contains_the_ppid_or_a_config_hash`
+    /// — claimed more than this checks and read as a general assurance about
+    /// what `to_json` discloses. It is not one. `to_json` serialises
+    /// `QuoteVerdict::Verified`, which carries `config: TcbConfig`: the whole
+    /// platform attribute map, in cleartext, one record per request. That is
+    /// strictly *more* identifying than the salted key the old name ruled
+    /// out, and this test passes with it there. The disclosure is deliberate
+    /// — the JSON is the machine-readable surface — and it is documented in
+    /// the README beside the `NOT EVIDENCE` caveat rather than quietly
+    /// narrowed here.
+    ///
+    /// What these two literals do hold is the boundary Task 4 built: no
+    /// hardware serial, and no per-counterparty key the meter derived.
     #[test]
-    fn the_json_form_never_contains_the_ppid_or_a_config_hash() {
+    fn the_json_form_names_neither_the_hardware_identifier_nor_a_salted_key() {
         let f = Finding {
             verdict: verified(),
             binding: SessionBinding::Bound,
@@ -974,6 +1005,52 @@ mod tests {
         assert!(
             !j.contains("fingerprint"),
             "a per-counterparty key must not reach the wire"
+        );
+    }
+
+    /// The disclosure the test above does not make, made explicitly.
+    ///
+    /// Asserting that the cleartext configuration *is* in the JSON is worth a
+    /// test of its own: it is the thing a reader of the negative test would
+    /// otherwise assume was excluded, and if it is ever removed the README
+    /// paragraph warning about it becomes a lie in the other direction. It is
+    /// also the reason `render` and `to_json` are not interchangeable —
+    /// `render` prints platform prose, the status word and varying attribute
+    /// *names*, and the binary uses `render`.
+    #[test]
+    fn the_json_form_does_carry_the_cleartext_configuration_and_the_readme_says_so() {
+        let f = Finding {
+            verdict: QuoteVerdict::Verified {
+                platform: Platform::TdxV10,
+                tcb_status: "UpToDate".into(),
+                advisories: vec![],
+                config: TcbConfig::for_test(&[("fmspc", "b0c06f000000")]),
+            },
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        let j = serde_json::to_string(&f.to_json()).expect("the finding serialises");
+        assert!(
+            j.contains("b0c06f000000"),
+            "if `config` has left `to_json`, the README's paragraph about \
+             retaining the JSON stream now overstates the risk and must go \
+             with it: {j}"
+        );
+
+        // ...and `render`, which is what the binary calls, does not.
+        let rendered = f.render();
+        assert!(
+            !rendered.contains("b0c06f000000"),
+            "the rendered finding is the one an operator's log holds by \
+             default, and it must stay attribute *names* only: {rendered}"
+        );
+
+        let readme = include_str!("../../README.md");
+        assert!(
+            readme.contains("retaining the JSON stream is retaining the dossier"),
+            "the JSON's disclosure is documented in the README, not fixed in \
+             code; if that paragraph goes, so does the only warning an \
+             operator gets"
         );
     }
 

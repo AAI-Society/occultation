@@ -368,6 +368,20 @@ Two further limits, both narrower than they sound and both real:
   so a dashboard built on the JSON can plot `1 of 1` as an anonymity set of
   one with nothing to warn it. The rendered finding says otherwise; the JSON
   does not. If you consume the JSON, apply the threshold yourself.
+- **`Finding::to_json` carries the full platform configuration, in
+  cleartext.** The rendered finding names *which attributes vary*; the JSON
+  serialises the verdict, and a verified verdict carries the whole
+  `TcbConfig` — every FMSPC, SVN and attribute value, one record per request.
+  Wire that stream into a log store and you hold a timestamped platform
+  fingerprint per request, joinable against whatever `agent_id` or token your
+  access log already has. Put plainly:
+  **retaining the JSON stream is retaining the dossier** the meter exists to
+  refuse to build. Nothing in phase 1 emits it
+  — the binary prints the rendered form — so this is a property of the API,
+  not of the shipped gateway. It is documented rather than removed because
+  the JSON is the machine-readable surface and a quietly narrowed one would
+  be worse. If you consume it, drop `verdict.config` unless you have decided
+  you want that record.
 - **Rotation is also the only memory ceiling.** Between rotations the meter's
   two maps grow with the number of distinct configurations seen, and
   `td_attributes` and `xfam` are set at TD creation rather than fixed by the
