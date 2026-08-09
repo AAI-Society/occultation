@@ -68,6 +68,53 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// bounded allocation and only ever costs a redundant fetch.
 const MAX_TRACKED_PLATFORMS: usize = 512;
 
+/// The shortest salt rotation this gateway will start with.
+///
+/// Not an arbitrary tidiness bound. `LinkabilityMeter::rotate_if_due` clears
+/// the whole store once `rotation` has elapsed, and this module's timer asks
+/// it four times per interval. With `rotation` at or below the interval
+/// between requests, the store is cleared between every pair of
+/// observations, and *every* request comes back `set_size: 1,
+/// total_sessions: 1, distinct_configs: 1` — a tool whose job is flagging
+/// low diversity silently reporting maximum anonymity, on a diverse
+/// population, forever. `--salt-rotation 0s` is the extreme (rotate on every
+/// tick, roughly a thousand times a second); anything sub-second fails the
+/// same way and less visibly.
+///
+/// A minute is well below any interval an operator would choose on purpose —
+/// the default is an hour — and well above any traffic rate at which the
+/// collapse is possible. See
+/// `a_sub_second_rotation_is_the_collapse_this_floor_exists_to_refuse`, which
+/// demonstrates the harm rather than describing it.
+pub const MIN_SALT_ROTATION: Duration = Duration::from_secs(60);
+
+/// A salt rotation short enough to make the meter report maximum anonymity.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "a salt rotation of {rotation:?} is shorter than the {minimum:?} minimum; \
+     the meter would clear its store between observations and report every \
+     request as an anonymity set of one"
+)]
+pub struct RotationTooShort {
+    pub rotation: Duration,
+    pub minimum: Duration,
+}
+
+/// Refuse a rotation interval that would collapse every anonymity set to one.
+///
+/// The same shape as `proxy::validate_upstream`: a configuration mistake is
+/// caught at startup, where an operator reads the error, rather than
+/// discovered later as a suspiciously flattering number.
+pub fn validate_rotation(rotation: Duration) -> Result<(), RotationTooShort> {
+    if rotation < MIN_SALT_ROTATION {
+        return Err(RotationTooShort {
+            rotation,
+            minimum: MIN_SALT_ROTATION,
+        });
+    }
+    Ok(())
+}
+
 /// The request path's only handle on collateral refresh: schedule, never
 /// wait, never fetch.
 ///
@@ -77,7 +124,7 @@ const MAX_TRACKED_PLATFORMS: usize = 512;
 /// move, not a network round trip.
 #[derive(Clone)]
 pub struct RefreshQueue {
-    /// `None` for an [`inert`](RefreshQueue::inert) queue.
+    /// `None` for a [`never_refreshes`](RefreshQueue::never_refreshes) queue.
     tx: Option<Sender<Vec<u8>>>,
 }
 
@@ -98,13 +145,17 @@ impl RefreshQueue {
         }
     }
 
-    /// A queue that discards everything, for a pipeline assembled without a
-    /// refresher (tests that are not about collateral, and any caller that
-    /// deliberately runs with a cache it populates some other way).
+    /// A queue that discards everything and can never fetch anything.
     ///
-    /// Not a degraded `spawn`: it holds no cache and starts no task, so it
-    /// cannot fetch anything even by accident.
-    pub fn inert() -> RefreshQueue {
+    /// Named for its consequence rather than for its mechanism, because the
+    /// consequence is silent: a pipeline built on one reports `Unverified`
+    /// for every platform for the life of the process, with nothing louder
+    /// than a `debug!` line. That is the safe direction — it can never
+    /// manufacture a `Verified` — but it is not a degraded [`spawn`], and it
+    /// is not what a production gateway wants. It exists for pipelines
+    /// assembled for reasons other than collateral (most of this crate's
+    /// tests) and for a caller populating the cache some other way.
+    pub fn never_refreshes() -> RefreshQueue {
         RefreshQueue { tx: None }
     }
 }
@@ -116,7 +167,26 @@ impl RefreshQueue {
 /// provisioning service would otherwise sit in the same loop as the rotation
 /// timer and stop the salt rotating, which is a correlation-window failure
 /// caused by an unrelated network problem.
+///
+/// Fallible only for [`validate_rotation`]'s sake, and deliberately so: the
+/// timer here is the *only* caller of `rotate_if_due` in the process, so
+/// gating the timer is what makes an unsafe rotation interval unstartable
+/// rather than merely discouraged. A `LinkabilityMeter` built with a short
+/// rotation but never driven simply keeps correlating, which is the safe
+/// direction.
 pub fn spawn(
+    cache: Arc<CollateralCache>,
+    meter: Arc<LinkabilityMeter>,
+    rotation: Duration,
+) -> Result<RefreshQueue, RotationTooShort> {
+    validate_rotation(rotation)?;
+    Ok(spawn_with(cache, meter, rotation))
+}
+
+/// [`spawn`] without the interval check, so this module's own tests can drive
+/// a rotation faster than [`MIN_SALT_ROTATION`] without waiting a minute for
+/// it. Private: the checked entry point is the only way in from outside.
+fn spawn_with(
     cache: Arc<CollateralCache>,
     meter: Arc<LinkabilityMeter>,
     rotation: Duration,
@@ -149,10 +219,23 @@ async fn drive_rotation(meter: Arc<LinkabilityMeter>, rotation: Duration) {
     }
 }
 
-async fn drive_refresh(cache: Arc<CollateralCache>, mut rx: mpsc::Receiver<Vec<u8>>) {
+/// How the refresher reads a platform out of a quote. A function pointer only
+/// so this module's own tests can substitute one that panics — production has
+/// exactly one implementation, [`fmspc_of`].
+type FmspcParse = fn(&[u8]) -> Option<String>;
+
+async fn drive_refresh(cache: Arc<CollateralCache>, rx: mpsc::Receiver<Vec<u8>>) {
+    drive_refresh_with(cache, rx, fmspc_of).await
+}
+
+async fn drive_refresh_with(
+    cache: Arc<CollateralCache>,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    parse: FmspcParse,
+) {
     let mut attempted: HashMap<String, Instant> = HashMap::new();
     while let Some(quote) = rx.recv().await {
-        refresh_one(&cache, &mut attempted, quote).await;
+        refresh_one_within(&cache, &mut attempted, quote, FETCH_TIMEOUT, parse).await;
     }
 }
 
@@ -165,6 +248,35 @@ fn fmspc_of(quote: &[u8]) -> Option<String> {
     let parsed = dcap_qvl::quote::Quote::parse(quote).ok()?;
     let fmspc = dcap_qvl::intel::quote_fmspc(&parsed).ok()?;
     Some(fmspc_to_hex(&fmspc))
+}
+
+/// [`fmspc_of`] with a panic guard around it.
+///
+/// The parse behind this reads a DER-encoded PCK certificate and an Intel
+/// extension out of bytes an agent chose, in a third-party crate. It runs
+/// directly in the refresher's loop, so a panic in it unwinds out of
+/// `while let`, drops the receiver, and turns every later `schedule` into a
+/// `debug!` line — the gateway then reports `Unverified` for every platform
+/// for the rest of the process with nothing louder than that to say so.
+/// Requests still forward, so fail-open holds; the measurement product is
+/// what dies, silently, which for this tool is most of the point.
+///
+/// `catch_unwind` is possible here precisely because the parse is
+/// synchronous: it sits before the first `.await` in `refresh_one_within`,
+/// which is also why the *fetch* needs the separate child-task isolation
+/// below rather than this.
+fn fmspc_of_guarded(parse: FmspcParse, quote: &[u8]) -> Option<String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse(quote))) {
+        Ok(key) => key,
+        Err(_) => {
+            log::error!(
+                "reading a platform out of a quote panicked; dropping this refresh and \
+                 continuing. The refresher is still running and later platforms will \
+                 still be cached"
+            );
+            None
+        }
+    }
 }
 
 /// Decide whether `key` is due for another attempt, and record the attempt if
@@ -183,24 +295,17 @@ fn claim_attempt(attempted: &mut HashMap<String, Instant>, key: &str, now: Insta
     true
 }
 
-async fn refresh_one(
-    cache: &Arc<CollateralCache>,
-    attempted: &mut HashMap<String, Instant>,
-    quote: Vec<u8>,
-) {
-    refresh_one_within(cache, attempted, quote, FETCH_TIMEOUT).await
-}
-
-/// [`refresh_one`] with the fetch bound injected, so a test can pin the
-/// timeout without waiting [`FETCH_TIMEOUT`] for it. Production always passes
-/// `FETCH_TIMEOUT`.
+/// One refresh, with the fetch bound and the parser injected so a test can
+/// pin the timeout without waiting [`FETCH_TIMEOUT`] for it and can make the
+/// parse panic. Production always passes `FETCH_TIMEOUT` and [`fmspc_of`].
 async fn refresh_one_within(
     cache: &Arc<CollateralCache>,
     attempted: &mut HashMap<String, Instant>,
     quote: Vec<u8>,
     bound: Duration,
+    parse: FmspcParse,
 ) {
-    let Some(key) = fmspc_of(&quote) else {
+    let Some(key) = fmspc_of_guarded(parse, &quote) else {
         // Not a DCAP quote, or a certification type this crate cannot read a
         // platform out of. Nothing to fetch, and the verifier has already
         // reported it.
@@ -243,6 +348,7 @@ pub(crate) fn queue_for_test(tx: Sender<Vec<u8>>) -> RefreshQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn real_tdx_quote() -> Vec<u8> {
         include_bytes!("../../tests/fixtures/tdx-quote.bin").to_vec()
@@ -263,6 +369,26 @@ mod tests {
     fn a_quote_with_no_platform_is_skipped_rather_than_fetched() {
         assert_eq!(fmspc_of(&[0u8; 8]), None);
         assert_eq!(fmspc_of(&[]), None);
+    }
+
+    /// A parser that comes apart on one input and works on every other, so a
+    /// test can distinguish "the refresher survived a hostile quote" from
+    /// "the refresher never saw one".
+    fn parse_that_panics_on_boom(quote: &[u8]) -> Option<String> {
+        assert!(quote != b"boom", "injected parser panic on a hostile quote");
+        fmspc_of(quote)
+    }
+
+    /// The guard around the parse, at the unit level: a panic becomes `None`
+    /// rather than an unwind.
+    #[test]
+    fn a_panicking_parse_becomes_a_skipped_refresh_not_an_unwind() {
+        assert_eq!(fmspc_of_guarded(parse_that_panics_on_boom, b"boom"), None);
+        // ...and the guard is not simply swallowing everything.
+        assert_eq!(
+            fmspc_of_guarded(parse_that_panics_on_boom, &real_tdx_quote()).as_deref(),
+            Some(REAL_FMSPC_HEX)
+        );
     }
 
     /// The cooldown, pinned at its exact boundary. Without it every request
@@ -333,12 +459,12 @@ mod tests {
         assert_eq!(poll_period(hour), Duration::from_secs(900));
     }
 
-    /// An inert queue must be inert in the strong sense: it holds nothing
-    /// that could fetch, so scheduling against it is a no-op rather than a
-    /// deferred surprise.
+    /// A never-refreshing queue must be inert in the strong sense: it holds
+    /// nothing that could fetch, so scheduling against it is a no-op rather
+    /// than a deferred surprise.
     #[test]
-    fn an_inert_queue_swallows_everything_without_a_runtime() {
-        let q = RefreshQueue::inert();
+    fn a_never_refreshing_queue_swallows_everything_without_a_runtime() {
+        let q = RefreshQueue::never_refreshes();
         q.schedule(real_tdx_quote());
         q.schedule(vec![0u8; 8]);
     }
@@ -370,21 +496,26 @@ mod tests {
         RefreshQueue { tx: Some(tx) }.schedule(real_tdx_quote());
     }
 
-    /// A socket that accepts and then says nothing. `127.0.0.1:1` is refused
-    /// instantly on loopback and so cannot stand in for an unresponsive
-    /// provisioning service.
-    async fn black_hole() -> std::net::SocketAddr {
+    /// A socket that accepts and then says nothing, plus a count of how many
+    /// connections it took. `127.0.0.1:1` is refused instantly on loopback
+    /// and so cannot stand in for an unresponsive provisioning service.
+    async fn black_hole() -> (std::net::SocketAddr, Arc<AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind black hole");
         let addr = listener.local_addr().expect("black hole addr");
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&connections);
         tokio::spawn(async move {
+            // Held rather than dropped: a closed socket is a fast failure,
+            // which is the case this fixture exists to avoid.
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
                 held.push(stream);
             }
         });
-        addr
+        (addr, connections)
     }
 
     /// The fetch bound, against a provisioning service that never answers.
@@ -395,7 +526,7 @@ mod tests {
     /// so deleting it would leave the suite green.
     #[tokio::test]
     async fn an_unresponsive_provisioning_service_does_not_wedge_the_refresher() {
-        let addr = black_hole().await;
+        let (addr, _) = black_hole().await;
         let cache = Arc::new(CollateralCache::new(
             format!("http://{addr}"),
             Duration::from_secs(3600),
@@ -407,6 +538,7 @@ mod tests {
             &mut attempted,
             real_tdx_quote(),
             Duration::from_millis(100),
+            fmspc_of,
         )
         .await;
         assert!(
@@ -419,10 +551,125 @@ mod tests {
         assert!(attempted.contains_key(REAL_FMSPC_HEX));
     }
 
+    /// The whole point of Important 1: one hostile quote must not be the last
+    /// quote this gateway ever measures.
+    ///
+    /// Feeds the refresher a quote whose parse panics, then a legitimate one,
+    /// and asserts the legitimate one still reaches the provisioning service.
+    /// With the parse unguarded, the first message unwinds out of `while
+    /// let`, the receiver drops, and the second `schedule` goes to a closed
+    /// channel — the black hole is never contacted and the gateway reports
+    /// `Unverified` for every platform for the rest of the process.
+    #[tokio::test]
+    async fn a_quote_that_panics_the_parser_does_not_kill_the_refresher() {
+        let (addr, connections) = black_hole().await;
+        let cache = Arc::new(CollateralCache::new(
+            format!("http://{addr}"),
+            Duration::from_secs(3600),
+        ));
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(QUEUE_DEPTH);
+        tokio::spawn(drive_refresh_with(cache, rx, parse_that_panics_on_boom));
+
+        let queue = RefreshQueue { tx: Some(tx) };
+        queue.schedule(b"boom".to_vec());
+        queue.schedule(real_tdx_quote());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while connections.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the refresher died on the hostile quote; every later platform \
+                 stays uncached for the life of the process"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// The floor, at its boundary, and the harm it exists to refuse.
+    #[test]
+    fn a_sub_second_rotation_is_the_collapse_this_floor_exists_to_refuse() {
+        use crate::gateway::verify::TcbConfig;
+
+        fn cfg(n: u32) -> TcbConfig {
+            TcbConfig {
+                attributes: [("tee_tcb_svn".to_string(), format!("{n:032x}"))]
+                    .into_iter()
+                    .collect(),
+            }
+        }
+
+        // The harm, demonstrated rather than described. A meter whose
+        // rotation is shorter than the gap between observations is cleared
+        // between each one, so a population of five genuinely distinct
+        // configurations reports as one set of one, five times over.
+        let collapsed = LinkabilityMeter::new(Duration::ZERO, 7);
+        for n in 0..5 {
+            collapsed.rotate_if_due();
+            let o = collapsed.observe(&cfg(n));
+            assert_eq!(o.set_size, 1);
+            assert_eq!(
+                o.distinct_configs, 1,
+                "five distinct platforms reported as one — this is the failure"
+            );
+            assert_eq!(o.total_sessions, 1);
+        }
+
+        // The same population under a rotation the floor allows: the leak is
+        // reported honestly.
+        let honest = LinkabilityMeter::new(MIN_SALT_ROTATION, 7);
+        let mut last = None;
+        for n in 0..5 {
+            honest.rotate_if_due();
+            last = Some(honest.observe(&cfg(n)));
+        }
+        let last = last.expect("five observations happened");
+        assert_eq!(last.distinct_configs, 5);
+        assert_eq!(last.total_sessions, 5);
+
+        // And the boundary itself.
+        assert!(validate_rotation(Duration::ZERO).is_err());
+        assert!(validate_rotation(Duration::from_millis(999)).is_err());
+        assert!(
+            validate_rotation(MIN_SALT_ROTATION - Duration::from_nanos(1)).is_err(),
+            "one tick under the floor is still under it"
+        );
+        assert!(validate_rotation(MIN_SALT_ROTATION).is_ok());
+        assert!(validate_rotation(Duration::from_secs(3600)).is_ok());
+    }
+
+    /// The floor has to be enforced where the rotation timer is started, not
+    /// merely offered as a function nobody calls. `spawn` is the only way to
+    /// obtain a live queue from outside this module, and the timer it starts
+    /// is the only caller of `rotate_if_due` in the process.
+    #[tokio::test]
+    async fn spawn_refuses_a_rotation_short_enough_to_collapse_every_set() {
+        let cache = Arc::new(CollateralCache::new(
+            "http://127.0.0.1:1".to_string(),
+            Duration::from_secs(3600),
+        ));
+        let meter = Arc::new(LinkabilityMeter::new(Duration::from_secs(3600), 7));
+
+        let err = match spawn(Arc::clone(&cache), Arc::clone(&meter), Duration::ZERO) {
+            Ok(_) => panic!("a zero rotation must not start a gateway"),
+            Err(err) => err,
+        };
+        assert_eq!(err.minimum, MIN_SALT_ROTATION);
+        // The operator reads this; it has to say what to do about it.
+        let rendered = err.to_string();
+        assert!(rendered.contains("anonymity set of one"), "{rendered}");
+
+        assert!(spawn(cache, meter, MIN_SALT_ROTATION).is_ok());
+    }
+
     /// `spawn` has to actually drive rotation. Nothing else here would notice
     /// `drive_rotation` being dropped from it: the request path deliberately
     /// never calls `rotate_if_due`, so if the timer does not, nothing ever
     /// does and the salt lives forever.
+    ///
+    /// Goes through `spawn_with` rather than `spawn` so the rotation can be
+    /// 40 ms instead of [`MIN_SALT_ROTATION`]; `spawn` adds only the interval
+    /// check, which
+    /// `spawn_refuses_a_rotation_short_enough_to_collapse_every_set` covers.
     #[tokio::test]
     async fn the_background_task_rotates_the_salt_when_it_comes_due() {
         let cache = Arc::new(CollateralCache::new(
@@ -438,7 +685,7 @@ mod tests {
         meter.observe(&config);
         assert_eq!(meter.observe(&config).set_size, 2);
 
-        let _queue = spawn(cache, Arc::clone(&meter), Duration::from_millis(40));
+        let _queue = spawn_with(cache, Arc::clone(&meter), Duration::from_millis(40));
 
         // Poll rather than sleep a fixed amount: the timer polls at a quarter
         // of the interval, so the rotation lands somewhere inside 1.25 of it.

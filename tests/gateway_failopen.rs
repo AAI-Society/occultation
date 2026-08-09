@@ -430,7 +430,7 @@ async fn spawn_gateway_with_fault(upstream: SocketAddr, fault: Fault) -> Gw {
             meter,
             metrics,
             sink: Arc::clone(&sink) as Arc<dyn FindingSink>,
-            refresh: RefreshQueue::inert(),
+            refresh: RefreshQueue::never_refreshes(),
         },
     )
     .await;
@@ -453,7 +453,8 @@ async fn spawn_gateway_with_pccs(upstream: SocketAddr, pccs_url: &str) -> Gw {
         Arc::clone(&cache),
         Arc::clone(&meter),
         Duration::from_secs(3600),
-    );
+    )
+    .expect("an hour is well above the minimum salt rotation");
 
     let addr = serve_pipeline(
         upstream,
@@ -539,19 +540,57 @@ const ALL_FAULTS: [Fault; 8] = [
 /// — which is what happens to `VerifierPanics`, `MeterPanics` and
 /// `MeterLockPoisoned` the moment the request stops carrying something the
 /// source will hand onward.
-#[tokio::test]
+///
+/// The `VerifierHangsThenErrors` case additionally pins the premise the whole
+/// of `refresh.rs` is built on: **hyper does not write the response until the
+/// service future resolves**, so anything slow in the hook is
+/// time-to-first-byte the client pays, even though the hook runs after the
+/// forward. If that ever stopped being true, moving collateral fetches off
+/// the request path would be unnecessary — and if the hook were ever moved
+/// back ahead of the forward, or the response written before the hook ran,
+/// this assertion is what notices.
+///
+/// **Multi-threaded on purpose**, and the only test here that is. On a
+/// current-thread runtime `HangingVerifier`'s `thread::sleep` blocks the one
+/// worker, so the client cannot be served early *whatever* the hook's
+/// position relative to the response write — the timing assertion would hold
+/// for the wrong reason and a mutation that spawned the hook off the service
+/// future would still pass it. With four workers the response could be
+/// written by another thread the moment `handle` stopped waiting, so
+/// `elapsed >= HANG` only holds if hyper genuinely waits for the service
+/// future. This is also the flavour `#[tokio::main]` gives the real binary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_stage_fails_open() {
     for fault in ALL_FAULTS {
         let upstream = spawn_echo_upstream().await;
         let gw = spawn_gateway_with_fault(upstream, fault).await;
+        let started = Instant::now();
         let body = get(&gw, "/still-works")
             .await
             .unwrap_or_else(|e| panic!("{fault:?} took down the proxy: {e}"));
+        let elapsed = started.elapsed();
         assert_eq!(body, "echo:/still-works", "{fault:?} altered the response");
         assert!(
             gw.fault_fired() >= 1,
             "{fault:?} never actually fired, so this case proves nothing"
         );
+        if fault == Fault::VerifierHangsThenErrors {
+            // Both halves, because `elapsed >= HANG` alone is vacuous for a
+            // small enough `HANG` — at `Duration::ZERO` it can never fail,
+            // and the fixture would be decorative again.
+            assert!(
+                HANG >= Duration::from_millis(50),
+                "HANG is too short to be distinguishable from scheduling noise, \
+                 so the assertion below proves nothing"
+            );
+            assert!(
+                elapsed >= HANG,
+                "the client saw its response in {elapsed:?}, before the hook's \
+                 {HANG:?} of work finished. Hook cost is supposed to be \
+                 time-to-first-byte cost — that premise is the entire reason \
+                 collateral refresh lives off the request path"
+            );
+        }
     }
 }
 

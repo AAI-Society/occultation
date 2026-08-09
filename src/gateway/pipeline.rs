@@ -88,20 +88,20 @@ pub const STAGE_SINK: &str = "finding sink";
 /// avoids the vocabulary [`crate::gateway::finding`]'s `WhyKind::classify`
 /// keys on — this is not a collateral problem and not a provisioning-service
 /// problem, and mislabelling it would send an operator to fix the wrong thing.
-const SOURCE_PANICKED: &str =
+pub const SOURCE_PANICKED: &str =
     "the attestation source panicked before a quote could be read, so this \
      request was forwarded without being measured";
 
 /// See [`SOURCE_PANICKED`]: with the source gone, its own claim about session
 /// binding is gone too, and `Bound` must never be the fallback.
-const BINDING_UNKNOWN: &str =
+pub const BINDING_UNKNOWN: &str =
     "the attestation source panicked, so nothing is known about whether a \
      quote was bound to this session";
 
-const NO_ATTESTATION: &str =
+pub const NO_ATTESTATION: &str =
     "no attestation accompanied this request, so there was nothing to verify";
 
-const VERIFIER_PANICKED: &str =
+pub const VERIFIER_PANICKED: &str =
     "the quote verifier panicked, so this request was forwarded without a verdict";
 
 /// Verify a quote. The seam Task 4's [`QuoteVerifier`] plugs into, and the one
@@ -179,12 +179,21 @@ impl Measured {
     }
 }
 
+/// The level [`LogSink`] emits at.
+///
+/// Exported because with no metrics endpoint yet, the log is the gateway's
+/// *only* output channel, and a default log filter below this level is the
+/// difference between a gateway that reports findings and one that reports
+/// nothing at all. `src/bin/gateway.rs` derives its default filter from this
+/// constant rather than repeating a level literal that could drift from it.
+pub const SINK_LOG_LEVEL: log::Level = log::Level::Info;
+
 /// The default sink: write the finding to the log.
 pub struct LogSink;
 
 impl FindingSink for LogSink {
     fn emit(&self, measured: &Measured) {
-        log::info!("{}", measured.render().trim_end());
+        log::log!(SINK_LOG_LEVEL, "{}", measured.render().trim_end());
     }
 }
 
@@ -545,7 +554,7 @@ mod tests {
                 meter: Arc::clone(&self.meter),
                 metrics: Arc::clone(&self.metrics),
                 sink: Arc::clone(&self.sink) as Arc<dyn FindingSink>,
-                refresh: RefreshQueue::inert(),
+                refresh: RefreshQueue::never_refreshes(),
             }
         }
     }

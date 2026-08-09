@@ -1237,6 +1237,44 @@ mod tests {
         );
     }
 
+    /// The other producer of `Unverified` reasons, held to the same standard.
+    ///
+    /// Task 7's pipeline writes four fixed strings of its own for the cases
+    /// `verify.rs` never sees: a source or verifier that panicked, a request
+    /// with no attestation at all, and the session-binding fallback that goes
+    /// with a panicked source. Every one of them describes a **gateway bug**
+    /// or a **missing header** — not a collateral problem and not a
+    /// provisioning-service problem. Each must therefore land in `Other`.
+    ///
+    /// The risk is a rewording, not a bug: these are English sentences, and
+    /// slipping the word "pcs", "provisioning service" or "platform" plus
+    /// "unsupported" into one of them silently relabels a crash in our own
+    /// code as an infrastructure failure and sends an operator to fix the
+    /// wrong thing. Nothing but this table catches that.
+    ///
+    /// `BINDING_UNKNOWN` never reaches `classify` today — it is a
+    /// `SessionBinding` reason, not a `QuoteVerdict` one — and is included
+    /// anyway so that a future wiring which does classify it cannot start out
+    /// mislabelled.
+    #[test]
+    fn the_pipelines_own_unverified_reasons_all_bucket_as_other() {
+        use crate::gateway::pipeline::{
+            BINDING_UNKNOWN, NO_ATTESTATION, SOURCE_PANICKED, VERIFIER_PANICKED,
+        };
+        for (name, why) in [
+            ("SOURCE_PANICKED", SOURCE_PANICKED),
+            ("BINDING_UNKNOWN", BINDING_UNKNOWN),
+            ("NO_ATTESTATION", NO_ATTESTATION),
+            ("VERIFIER_PANICKED", VERIFIER_PANICKED),
+        ] {
+            assert_eq!(
+                WhyKind::classify(why),
+                WhyKind::Other,
+                "{name} classifies as something it is not: {why:?}"
+            );
+        }
+    }
+
     /// The real, current gap: `verify.rs`'s unreadable-clock message is
     /// none of the four named causes. Copied verbatim from `verify_at` here,
     /// and pinned against the *live source* by
