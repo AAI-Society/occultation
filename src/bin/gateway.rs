@@ -149,6 +149,20 @@ async fn main() -> Result<()> {
     // the decision is to run anyway. This gateway sits in front of somebody
     // else's API; refusing to start because port 9469 was already taken would
     // take that API down to protect a counter. Loud, and then onward.
+    // Defence in depth only — the loopback default is pinned by two tests —
+    // but an operator who binds this off-host should learn it from a log line
+    // now rather than from whoever finds the port later. The counters carry no
+    // per-counterparty data by construction, and they do describe a fleet's
+    // TCB diversity, which is the thing this whole tool exists to say is
+    // sensitive.
+    if !cli.metrics_listen.ip().is_loopback() {
+        log::warn!(
+            "the metrics listener is bound to {}, which is not loopback: the \
+             gateway's TCB-diversity counters will be readable by anything \
+             that can route to this host, and nothing authenticates a scrape",
+            cli.metrics_listen
+        );
+    }
     match scrape::bind(cli.metrics_listen).await {
         Ok(listener) => {
             log::info!(

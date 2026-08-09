@@ -96,9 +96,13 @@ jobs:
           fi
 
           # 1. The TCB override: it would make the gateway report Verified for a
-          #    platform Intel has revoked. The needle is the PREFIX, because dcap-qvl
-          #    0.6 exposes four such entry points and the full spelling of one misses
-          #    two of the others.
+          #    platform Intel has revoked. The needle is the STEM the four current
+          #    upstream spellings share, because dcap-qvl 0.6 exposes four such entry
+          #    points and the full spelling of one misses two of the others. It is not
+          #    exhaustive over names upstream has not invented yet — widening to the
+          #    bare `dangerous_` warning prefix was considered and rejected, because it
+          #    also matches this crate's prose about the guard, and a guard that
+          #    forbids discussing itself is one someone weakens later.
           check_absent \
             "a TCB-override entry point appears in the crate" \
             "dangerous_""verify"
@@ -120,7 +124,18 @@ jobs:
           #    verifier, bind the report to an inferred local and hand it to a logger —
           #    naming no banned token, in a file the ban cannot see. Containment is the
           #    only closure: the call must live in the one file the ban covers.
-          search "dcap_qvl::verify::""verify("
+          #
+          #    The needle does NOT name the crate, and that is the point. Anchored on
+          #    the fully-qualified path, this check was bypassed by two two-line
+          #    additions that left every guard green:
+          #
+          #        use dcap_qvl::{verify, Quote};   fn m() { let r = verify::verify(..); }
+          #        use dcap_qvl as dq;              fn m() { let r = dq::verify::verify(..); }
+          #
+          #    A shortened path still has to write the module and the function, so
+          #    matching the call rather than the import closes both at once instead of
+          #    trying to enumerate the import spellings that reach it.
+          search "verify::""verify("
           calls="$MATCHES"
           n=0
           [ -n "$calls" ] && n=$(printf '%s\n' "$calls" | wc -l | tr -d ' ')
@@ -140,7 +155,13 @@ jobs:
           fi
           # ...and the three other spellings that reach a report without writing that
           # call out.
+          #    Belt and braces on the import routes. The brace-group needle is split
+          #    before the `::`, not inside its `.*`: fragmenting it as
+          #    "use dcap_qvl::{.*""verify" looks equivalent and is not, because the
+          #    greedy `.*` would let the assembled regex match its own source line.
           check_absent "an import of the upstream verify module" "use dcap_qvl::""verify"
+          check_absent "a brace-group import naming it"          "use dcap_qvl""::{.*verify"
+          check_absent "an alias for the upstream crate"         "use dcap_qvl ""as"
           check_absent "upstream's own verifier type"            "dcap_qvl::verify::""QuoteVerifier"
           check_absent "the fetch-and-verify shortcut"           "fetch_and""_verify"
 

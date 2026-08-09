@@ -36,10 +36,10 @@
 //! 1. Greps over `src/`, `tests/`, `benches/` and `examples/` — the field
 //!    access, the name of the struct that carries it (which a stored field, a
 //!    return type or a destructuring pattern all have to write), and the
-//!    TCB-override entry points, matched by their shared `dangerous_` prefix
-//!    rather than by one spelling, since upstream has four of them. Task 8's
-//!    CI job duplicates all of these, and they are the only checks that
-//!    survive someone marking a behavioural test `#[ignore]`.
+//!    TCB-override entry points, matched by the stem all four of upstream's
+//!    spellings share rather than by one of them. Task 8's CI job duplicates
+//!    all of these, and they are the only checks that survive someone marking
+//!    a behavioural test `#[ignore]`.
 //! 2. A lexical ban on `?}`, `log::`, `println!`, `eprintln!` and `dbg!` in
 //!    this module's non-test code. A grep for the identifier cannot see
 //!    `log::info!("{verified:?}")`, which names nothing forbidden and never
@@ -277,8 +277,8 @@ impl QuoteVerifier {
     /// produces a [`QuoteVerdict`]. There is no error path out of this
     /// function and nothing in it may panic.
     ///
-    /// `dcap-qvl` also exposes TCB-override entry points, all carrying a
-    /// `dangerous_` prefix and all well named: they let a caller rewrite the
+    /// `dcap-qvl` also exposes four TCB-override entry points, all warned
+    /// about in their names and all well named: they let a caller rewrite the
     /// TCB info after signature checking, which would make this gateway
     /// report `Verified` for a platform Intel has revoked. None is ever
     /// called here, and
@@ -1298,18 +1298,27 @@ mod tests {
     /// revoked, and this is the only check that survives someone marking the
     /// behavioural tests `#[ignore]`.
     ///
-    /// The needle is now the **prefix**, not the full spelling of one
+    /// The needle is a **shared stem**, not the full spelling of one
     /// function. `dcap-qvl` 0.6.1 exposes *four* overriding entry points, not
     /// one: a `..._with_tcb_override` free function and its inherent-method
     /// twin, plus a `..._claims_with_tcb_override` and a
     /// `..._result_with_tcb_override`. The full-spelling needle this guard
     /// used to carry matched only the first two and let the other two
     /// through — the same shape of hole as banning `:?` and missing `{:#?}`,
-    /// which took a second fix round elsewhere in this file. The prefix
-    /// catches all four and anything upstream adds alongside them, and it is
-    /// free: the crate contains no such token, in code or in prose (this
-    /// module's own documentation was reworded so that stays true, which is
-    /// why none of the four is spelled out above).
+    /// which took a second fix round elsewhere in this file.
+    ///
+    /// Be exact about the reach, because the earlier version of this comment
+    /// was not. The needle is the stem the four *current* names share, and it
+    /// catches all four. It is **not** exhaustive over names upstream has not
+    /// invented yet: a future `dangerous_override_tcb` would carry the same
+    /// warning prefix and would not match. Widening to that bare prefix was
+    /// considered and rejected — it is not free, because it matches this
+    /// test's own name and three lines of this module's prose, and a guard
+    /// that forbids the crate from *discussing* the thing it guards is a
+    /// guard someone weakens later. No lexical needle can be exhaustive over
+    /// future names; the containment guard below is what bounds the damage
+    /// if one appears, since every override entry point lives in the same
+    /// upstream module.
     #[test]
     fn the_dangerous_override_is_never_called_anywhere_in_this_crate() {
         let found = grep_crate(&needle("dangerous_", "verify"));
@@ -1336,28 +1345,63 @@ mod tests {
     /// has to be reachable from exactly one file, and that file has to be the
     /// one the formatter ban covers.
     ///
-    /// Four needles, because reaching a report has four spellings:
+    /// Five needles, covering **the spellings this guard knows about**. That
+    /// wording is deliberate and replaces an earlier "five needles, because
+    /// reaching a report has five spellings": exhaustiveness is not a claim a
+    /// grep can make, and the first version of this guard proved it by
+    /// missing two.
     ///
-    /// 1. the qualified call, which must occur exactly twice — the
-    ///    production call in `verify_at` and the one in
-    ///    `a_real_verified_report_leaks_none_of_its_hardware_identifier` —
-    ///    and both in this file;
-    /// 2. any `use` of the upstream `verify` module, which would let a caller
-    ///    write a bare call the first needle cannot see;
-    /// 3. upstream's own verifier *type* (distinct from this module's
-    ///    same-named one), whose inherent method returns the same report;
-    /// 4. the collateral client's fetch-then-verify shortcut, which returns a
-    ///    report without naming the `verify` module at all.
+    /// None of the five is written out below, for the reason [`needle`]
+    /// exists and the reason the override guard above does not name its four
+    /// functions either: a guard that spells its own needle finds its own
+    /// documentation. That is not hypothetical here — the first draft of this
+    /// comment quoted all five, and all five guards failed on it.
     ///
-    /// The first needle matches the *call* form, with its opening
-    /// parenthesis, so the three places this crate discusses the function in
-    /// prose — `collateral.rs`'s module header and its `refresh` docs, and
-    /// one doc comment below — do not have to be reworded to keep a security
-    /// guard honest. The other three are spelled only as assembled fragments,
-    /// for the reason [`needle`] exists.
+    /// The load-bearing one is the first, and it deliberately does **not**
+    /// name the crate:
+    ///
+    /// 1. the *call*, as module-then-function with its opening parenthesis,
+    ///    however the path in front of it was shortened. It must occur
+    ///    exactly twice, both in this file: the production call in
+    ///    `verify_at` and the one in
+    ///    `a_real_verified_report_leaks_none_of_its_hardware_identifier`.
+    ///
+    /// An earlier version anchored that needle on the *fully qualified* path,
+    /// and review found two two-line bypasses that both left every guard
+    /// green: a brace-group import of the upstream `verify` module followed
+    /// by a two-segment call, and a crate alias followed by a three-segment
+    /// call. Neither writes the fully qualified path; both still write the
+    /// module and the function next to each other. Dropping the crate name
+    /// closes both at the call site, which is the general fix — enumerating
+    /// import spellings is whack-a-mole, and the next spelling would have
+    /// been someone else's review round.
+    ///
+    /// The remaining four are belt and braces, on the imports that shorten a
+    /// path and on the two routes that never write that call at all:
+    ///
+    /// 2. importing the upstream `verify` module, or the function out of it;
+    /// 3. the brace-group form of the same import;
+    /// 4. aliasing the upstream crate, which renames every path below it;
+    /// 5. upstream's own verifier *type* (distinct from this module's
+    ///    same-named one) and the collateral client's fetch-then-verify
+    ///    shortcut, both of which yield a report without calling the free
+    ///    function.
+    ///
+    /// Needle 1 matches the call form *with its parenthesis*, so the places
+    /// this crate discusses the function in prose — `collateral.rs`'s module
+    /// header and its `refresh` docs, and one doc comment below — do not have
+    /// to be reworded to keep a security guard honest.
+    ///
+    /// Known limits, written down rather than implied. grep is line-oriented,
+    /// so an import wrapped across lines defeats needle 3 — though its *call
+    /// site* still trips needle 1, which is why needle 1 is the one that
+    /// matters. A `self as` rename inside a brace group defeats needle 4 the
+    /// same way. A lexical guard stops accidents and drive-by additions; it
+    /// does not stop someone who is trying, and nothing here should be read
+    /// as claiming otherwise.
     #[test]
     fn the_upstream_verifier_is_called_from_this_file_and_no_other() {
-        let calls = grep_crate(&needle("dcap_qvl::verify::verify", "("));
+        let calls = grep_crate(&needle("verify::", "verify("));
         let lines: Vec<&str> = calls.lines().collect();
         assert_eq!(
             lines.len(),
@@ -1381,6 +1425,20 @@ mod tests {
             (
                 "an import of the upstream verify module",
                 needle("use dcap_qvl::", "verify"),
+            ),
+            // Split before the path separator, not inside the wildcard.
+            // Putting the whole import prefix in the first fragment looks
+            // equivalent and is not: the greedy wildcard would then let the
+            // assembled regex match *its own source line*, which holds the
+            // prefix and, further along, the module name. Splitting here
+            // leaves no contiguous copy of the prefix anywhere in this file.
+            (
+                "a brace-group import naming the upstream verify module",
+                needle("use dcap_qvl", "::{.*verify"),
+            ),
+            (
+                "an alias for the upstream crate",
+                needle("use dcap_qvl ", "as"),
             ),
             (
                 "upstream's own verifier type",

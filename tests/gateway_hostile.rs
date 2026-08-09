@@ -1140,19 +1140,40 @@ async fn the_proxy_serves_whether_or_not_anything_scrapes_it() {
 }
 
 // ---------------------------------------------------------------------
-// The PPID, from outside the crate
+// The PPID, from outside the crate — and the honest limit on that
 // ---------------------------------------------------------------------
 
-/// The crate's central constraint, checked against the two output paths an
-/// operator and a machine actually consume, over hostile traffic rather than
-/// hand-built findings.
+/// Every *non-verified* finding this suite can produce, checked across all
+/// three output channels for a hardware identifier. Named for exactly that,
+/// because the general claim is not one this test can make.
 ///
-/// `verify.rs` proves the hardware serial never crosses the verifier
-/// boundary, and `finding.rs` proves neither renderer emits it. This is the
-/// end-to-end version: whatever a hostile agent sends, nothing the gateway
-/// writes down mentions it, in any of its three output channels.
+/// The earlier name — "no hostile input puts a hardware identifier into any
+/// output" — promised more than the harness delivers, and review was right to
+/// call it. `spawn_hostile_gateway` builds the real verifier over a cold cache
+/// pointed at a dead port with `never_refreshes`, and no integration test can
+/// reach `dcap_qvl::verify::verify` at all (see the module docs). **No
+/// verified report is ever constructed here, so there is no hardware
+/// identifier in existence to leak.** `verified_verdict` could be mutated to
+/// copy the serial into every TCB attribute and this test would stay green.
+///
+/// What it does hold is still worth holding, and nothing else holds it: the
+/// six hostile inputs drive the `Invalid` and `Unverified` renderings — free
+/// text from `SourceError`, from `Quote::parse` and from the collateral
+/// lookup, all of it derived from bytes an agent chose — through `render`,
+/// `to_json` and the scrape encoder. That is a regression check on the
+/// output layer for the verdicts this harness can actually produce.
+///
+/// The verified path is out of reach from here and is pinned in-crate, where
+/// the clock can be held inside the collateral's validity window, by
+/// `verify.rs`'s `a_real_verified_report_leaks_none_of_its_hardware_identifier`
+/// — which runs a genuine verification, recovers the real serial from the
+/// report at runtime, and asserts it appears in neither output form in any of
+/// seven byte shapes. **Do not "strengthen" this test by handing it a
+/// fabricated report.** A serial invented by a stub proves nothing about the
+/// one real hardware hands over, and the honest name is worth more than the
+/// false coverage.
 #[tokio::test]
-async fn no_hostile_input_puts_a_hardware_identifier_into_any_output() {
+async fn no_unverified_finding_carries_a_hardware_identifier_in_any_output_channel() {
     let gw = spawn_hostile_gateway().await;
     for how in ALL_MISBEHAVIOURS {
         misbehave(&gw, "/leak-check", how).await.unwrap();
