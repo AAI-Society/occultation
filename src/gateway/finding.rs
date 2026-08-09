@@ -24,14 +24,29 @@
 //! the same discipline `report::Table::render` uses for `MODELLED` rows (see
 //! `a_modelled_row_renders_the_word_modelled_on_its_own_line`'s reasoning: a
 //! footnote at the bottom of a long finding is not the same guarantee as a
-//! marker on the line itself). The anonymity block — the one place this
-//! module prints a number — is gated on `observation.is_some()` alone, not
-//! on which verdict produced it: an `Unverified` finding has no trustworthy
-//! configuration to partition on, so it must never carry a set size, and
+//! marker on the line itself, which is also why
+//! `unverified_is_as_prominent_as_verified_and_says_why` checks the *first
+//! line* alone rather than the whole rendering — a whole-output `contains`
+//! would pass even if the verdict word moved to a footnote).
+//!
+//! The banner ahead of `quote: ...` is itself conditional, not fixed text:
+//! `VERIFIED` alone earns "agent authorized ✓" — every other verdict gets
+//! "agent forwarded (fail-open)". Fail-open means the *request* always goes
+//! through regardless of the verdict, but a fixed "authorized ✓" prefix on
+//! every line would put an affirmative checkmark next to `UNVERIFIED`, and a
+//! checkmark is a pass signal no reworded parenthetical can cancel out.
+//! `an_unverified_line_carries_no_checkmark` pins this.
+//!
+//! The anonymity block — the one place this module prints a number — is
+//! gated on **both** `observation.is_some()` *and* the verdict being
+//! `Verified`, not on either alone: an `Unverified` or `Invalid` finding has
+//! no trustworthy configuration to partition on, so it must never carry a
+//! set size, even if a caller (Task 7, say) constructs one with an
+//! `Observation` attached anyway — both `Finding` fields are `pub`, so
+//! nothing stops that at the type level.
 //! `a_verified_finding_with_no_observation_omits_the_anonymity_block_too`
-//! pins that the gate is the `Option`, not a `matches!` on the verdict, so a
-//! future edit cannot special-case one arm at a time and shrink the other's
-//! guarantee.
+//! and `an_unverified_finding_with_an_observation_still_carries_no_anonymity_number`
+//! pin both halves of the conjunction independently.
 //!
 //! # Attribute names
 //!
@@ -60,7 +75,16 @@
 //! `why_kind` — is a fixed-size Rust enum with a hand-written
 //! [`EncodeLabelValue`] impl whose `match` has **no wildcard arm**: adding a
 //! new [`Platform`] variant, for instance, fails this module's build rather
-//! than silently falling through to a default label. `tcb_status` and
+//! than silently falling through to a default label. `platform` reuses
+//! [`Platform`] itself (now `Hash`, at coordinator ruling) rather than a
+//! local mirror enum — one three-variant enum with one rendering to a
+//! Prometheus label, rather than a second copy that agrees with the first
+//! only because someone hand-kept them in sync. `platform_display` stays a
+//! separate function deliberately: it renders *operator prose* ("TDX 1.0"),
+//! a different job from a machine-readable label, and the two are pinned
+//! independently (`each_platform_variant_renders_its_own_distinct_label` for
+//! the label, `a_verified_finding_states_the_exact_first_line_per_platform`
+//! for the prose). `tcb_status` and
 //! `why_kind` both start from free text (`QuoteVerdict::Verified.tcb_status`
 //! is a `String`; `QuoteVerdict::Unverified.why` likewise) that must never
 //! itself reach a label — see [`TcbStatusLabel::classify`] and
@@ -70,8 +94,10 @@
 //!
 //! One honest gap: the task brief names exactly four `why_kind` values
 //! (`collateral_absent`, `collateral_stale`, `pcs_unreachable`,
-//! `unsupported_platform`). [`QuoteVerifier::verify_at`] in `verify.rs` also
-//! produces a fifth `Unverified` reason today — an unreadable system clock —
+//! `unsupported_platform`).
+//! [`QuoteVerifier::verify_at`](crate::gateway::verify::QuoteVerifier) in
+//! `verify.rs` also produces a fifth `Unverified` reason today — an
+//! unreadable system clock —
 //! that does not describe any of the four. Silently folding it into one of
 //! them (most plausibly `unsupported_platform`) would misreport *why*
 //! verification failed, which is exactly the failure mode this module is
@@ -122,27 +148,40 @@ impl Finding {
     /// indexing, no parsing, and no I/O for a hostile or malformed input to
     /// reach.
     pub fn render(&self) -> String {
-        let (verdict_word, parenthetical) = match &self.verdict {
+        // Only a genuinely `Verified` quote earns the checkmark. Fail-open
+        // means the request is forwarded either way — that is what "agent
+        // forwarded (fail-open)" states plainly for the other two arms —
+        // but a fixed "authorized ✓" prefix on every line would put an
+        // affirmative pass signal directly ahead of `UNVERIFIED` or
+        // `INVALID`, which constraint 2 forbids regardless of how the
+        // parenthetical reads. See `an_unverified_line_carries_no_checkmark`.
+        let (prefix, verdict_word, parenthetical) = match &self.verdict {
             QuoteVerdict::Verified {
                 platform,
                 tcb_status,
                 ..
             } => (
+                "agent authorized \u{2713}",
                 "VERIFIED",
                 format!("{}, TCB {tcb_status}", platform_display(platform)),
             ),
-            QuoteVerdict::Unverified { why } => ("UNVERIFIED", why.clone()),
-            QuoteVerdict::Invalid { reason } => ("INVALID", reason.clone()),
+            QuoteVerdict::Unverified { why } => {
+                ("agent forwarded (fail-open)", "UNVERIFIED", why.clone())
+            }
+            QuoteVerdict::Invalid { reason } => {
+                ("agent forwarded (fail-open)", "INVALID", reason.clone())
+            }
         };
 
-        let mut out =
-            format!("agent authorized \u{2713}   quote: {verdict_word} ({parenthetical})\n");
+        let mut out = format!("{prefix}   quote: {verdict_word} ({parenthetical})\n");
 
-        // Gated on the `Option` alone, not on the verdict: an `Unverified`
-        // or `Invalid` finding has no trustworthy configuration to
-        // partition on, so it must never carry a set size, no matter which
-        // verdict arm produced it.
-        if let Some(obs) = &self.observation {
+        // Gated on **both** the `Option` and the verdict, not either alone:
+        // an `Unverified` or `Invalid` finding has no trustworthy
+        // configuration to partition on, so it must never carry a set size
+        // — even if a caller attaches an `Observation` to one anyway, which
+        // nothing at the type level prevents (`Finding`'s fields are both
+        // `pub`). See `an_unverified_finding_with_an_observation_still_carries_no_anonymity_number`.
+        if let (QuoteVerdict::Verified { .. }, Some(obs)) = (&self.verdict, &self.observation) {
             let _ = writeln!(
                 out,
                 "  anonymity set     {} of {} sessions",
@@ -227,35 +266,19 @@ impl EncodeLabelValue for VerdictKind {
 
 /// The `platform` label on `gateway_quotes_total`.
 ///
-/// A local mirror of [`Platform`] rather than that type reused directly:
-/// `Platform` does not derive `Hash` (nothing before this module needed a
-/// `Platform` as a map key), and this module's file scope is `Finding` and
-/// `Metrics` only — adding a derive to `verify.rs` is Task 4's file to
-/// touch, not this one's. The `From` impl is exhaustive for the same reason
-/// every other mapping here is.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-enum PlatformLabel {
-    TdxV10,
-    TdxV15,
-    SgxEnclave,
-}
-
-impl From<Platform> for PlatformLabel {
-    fn from(p: Platform) -> Self {
-        match p {
-            Platform::TdxV10 => PlatformLabel::TdxV10,
-            Platform::TdxV15 => PlatformLabel::TdxV15,
-            Platform::SgxEnclave => PlatformLabel::SgxEnclave,
-        }
-    }
-}
-
-impl EncodeLabelValue for PlatformLabel {
+/// [`Platform`] itself, not a local mirror: it now derives `Hash` (see
+/// `verify.rs`), so reusing it directly here means there is exactly one
+/// three-variant enum and one place its Prometheus rendering is written,
+/// instead of two independent copies (this one, plus `verify.rs`'s serde
+/// rename) that agree only because someone hand-kept them in sync. This
+/// `match` is exhaustive for the same reason every other mapping here is —
+/// a fourth `Platform` variant fails this `impl`'s build.
+impl EncodeLabelValue for Platform {
     fn encode(&self, encoder: &mut LabelValueEncoder) -> Result<(), std::fmt::Error> {
         let s: &str = match self {
-            PlatformLabel::TdxV10 => "tdx_v10",
-            PlatformLabel::TdxV15 => "tdx_v15",
-            PlatformLabel::SgxEnclave => "sgx_enclave",
+            Platform::TdxV10 => "tdx_v10",
+            Platform::TdxV15 => "tdx_v15",
+            Platform::SgxEnclave => "sgx_enclave",
         };
         encoder.write_str(s)
     }
@@ -392,7 +415,7 @@ struct RequestLabels {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct QuoteLabels {
-    platform: PlatformLabel,
+    platform: Platform,
     tcb_status: TcbStatusLabel,
 }
 
@@ -461,7 +484,7 @@ impl Metrics {
             } => {
                 self.quotes
                     .get_or_create(&QuoteLabels {
-                        platform: PlatformLabel::from(*platform),
+                        platform: *platform,
                         tcb_status: TcbStatusLabel::classify(tcb_status),
                     })
                     .inc();
@@ -520,11 +543,19 @@ mod tests {
         };
         let out = f.render();
         assert!(out.contains("VERIFIED"), "{out}");
+        assert!(!out.contains("UNVERIFIED"), "{out}");
         assert!(
             out.contains("3 of 1847"),
             "the set and the corpus, together: {out}"
         );
         assert!(out.contains("tee_tcb_svn"), "{out}");
+        // The positive half of the anonymity-block gate: `an_unverified_finding_carries_no_anonymity_number`
+        // and `a_verified_finding_with_no_observation_omits_the_anonymity_block_too`
+        // only ever assert these labels are *absent*, which a mutation that
+        // always omitted the block would also satisfy vacuously. This is the
+        // case where they must appear.
+        assert!(out.contains("anonymity set"), "{out}");
+        assert!(out.contains("varying"), "{out}");
     }
 
     /// The gap between header transport and RA-TLS is a finding, not a
@@ -549,7 +580,15 @@ mod tests {
             binding: SessionBinding::Bound,
             observation: Some(obs(3, 9)),
         };
-        assert!(!f.render().to_lowercase().contains("replay"));
+        let out = f.render();
+        assert!(!out.to_lowercase().contains("replay"), "{out}");
+        // The positive half: `BOUND` must actually appear on the session
+        // binding line, not merely "no replay claim was made because the
+        // line vanished".
+        assert!(
+            out.contains("session binding") && out.contains("BOUND"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -562,11 +601,73 @@ mod tests {
             observation: None,
         };
         let out = f.render();
-        assert!(out.contains("UNVERIFIED"), "{out}");
+        // The *first line*, not the whole rendering: `report.rs`'s own
+        // `a_modelled_row_renders_the_word_modelled_on_its_own_line` exists
+        // precisely because a whole-output `contains` still passes if the
+        // marker moves to a footnote — this module cites that test by name
+        // as the discipline it follows, so its own test has to hold the
+        // same line, not just the same output.
+        let first = out
+            .lines()
+            .next()
+            .expect("render always emits a first line");
+        assert!(first.contains("UNVERIFIED"), "{first}");
         assert!(
-            out.contains("no collateral cached"),
-            "the reason must reach the reader: {out}"
+            first.contains("no collateral cached"),
+            "the reason must reach the reader on the same line: {first}"
         );
+    }
+
+    /// Ruling 1: fail-open always forwards the request, but an affirmative
+    /// checkmark next to `UNVERIFIED` is still a pass signal, and constraint
+    /// 2 forbids `Unverified` ever reading as one. The prefix must change,
+    /// not just the parenthetical.
+    #[test]
+    fn an_unverified_line_carries_no_checkmark() {
+        let f = Finding {
+            verdict: QuoteVerdict::Unverified {
+                why: "PCS unreachable".into(),
+            },
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        let out = f.render();
+        assert!(
+            !out.contains('\u{2713}'),
+            "a checkmark reached an unverified line: {out}"
+        );
+        assert!(out.contains("agent forwarded (fail-open)"), "{out}");
+    }
+
+    /// The same property for `Invalid` — an agent's malformed or revoked
+    /// quote must not earn the checkmark either.
+    #[test]
+    fn an_invalid_line_carries_no_checkmark() {
+        let f = Finding {
+            verdict: QuoteVerdict::Invalid {
+                reason: "signature check failed".into(),
+            },
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        let out = f.render();
+        assert!(
+            !out.contains('\u{2713}'),
+            "a checkmark reached an invalid line: {out}"
+        );
+    }
+
+    /// The positive half of Ruling 1: a genuinely `Verified` finding must
+    /// still get the checkmark. Without this, a mutation that removed the
+    /// checkmark from *every* verdict would still pass the two tests above.
+    #[test]
+    fn a_verified_line_still_carries_the_checkmark() {
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Bound,
+            observation: None,
+        };
+        assert!(f.render().contains('\u{2713}'));
     }
 
     #[test]
@@ -603,6 +704,26 @@ mod tests {
         assert!(!out.contains("varying"), "{out}");
     }
 
+    /// The gap a `pub`-fielded `Finding` leaves open at the type level: Task
+    /// 7 (or any future caller) can construct an `Unverified` finding that
+    /// still carries `Some(observation)` — nothing stops it. The render gate
+    /// has to be a conjunction (`Some` *and* `Verified`), not `Some` alone,
+    /// or this exact combination would render a full anonymity block for a
+    /// quote that was never checked.
+    #[test]
+    fn an_unverified_finding_with_an_observation_still_carries_no_anonymity_number() {
+        let f = Finding {
+            verdict: QuoteVerdict::Unverified {
+                why: "PCS unreachable".into(),
+            },
+            binding: SessionBinding::Bound,
+            observation: Some(obs(3, 1847)),
+        };
+        let out = f.render();
+        assert!(!out.contains("anonymity set"), "{out}");
+        assert!(!out.contains("varying"), "{out}");
+    }
+
     #[test]
     fn an_invalid_finding_states_invalid_and_the_reason() {
         let f = Finding {
@@ -619,6 +740,43 @@ mod tests {
         assert!(!out.contains("UNVERIFIED"), "{out}");
     }
 
+    /// `platform_display` pinned exactly, for all three platforms, against
+    /// the *first line* of a real rendering. Without this, all three arms
+    /// could return `""`, or the same string, or drop `TCB {tcb_status}`
+    /// from the parenthetical entirely, and every other test in this file —
+    /// none of which renders a TDX 1.5 or SGX finding, and none of which
+    /// asserts the exact first line rather than a substring — would stay
+    /// green.
+    #[test]
+    fn a_verified_finding_states_the_exact_first_line_per_platform() {
+        let cases = [
+            (Platform::TdxV10, "TDX 1.0"),
+            (Platform::TdxV15, "TDX 1.5"),
+            (Platform::SgxEnclave, "SGX"),
+        ];
+        for (platform, expected_name) in cases {
+            let f = Finding {
+                verdict: QuoteVerdict::Verified {
+                    platform,
+                    tcb_status: "UpToDate".into(),
+                    advisories: vec![],
+                    config: TcbConfig::for_test(&[]),
+                },
+                binding: SessionBinding::Bound,
+                observation: None,
+            };
+            let out = f.render();
+            let first = out
+                .lines()
+                .next()
+                .expect("render always emits a first line");
+            let expected = format!(
+                "agent authorized \u{2713}   quote: VERIFIED ({expected_name}, TCB UpToDate)"
+            );
+            assert_eq!(first, expected, "platform {platform:?}");
+        }
+    }
+
     #[test]
     fn the_json_form_never_contains_the_ppid_or_a_config_hash() {
         let f = Finding {
@@ -631,6 +789,54 @@ mod tests {
         assert!(
             !j.contains("fingerprint"),
             "a per-counterparty key must not reach the wire"
+        );
+    }
+
+    /// The positive counterpart the negative test above cannot provide:
+    /// neither `"ppid"` nor `"fingerprint"` is a field name, value, or
+    /// possible rendering of anything `to_json` touches, so that test passes
+    /// for `json!({})`, for a `verdict`/`binding` swap, or for `observation`
+    /// silently dropped — none of those contain the two forbidden words
+    /// either. This pins the actual shape, following `report.rs`'s
+    /// `json_carries_the_source_and_provenance_as_data_not_prose`.
+    #[test]
+    fn to_json_carries_the_verdict_binding_and_observation_as_data_not_prose() {
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Bound,
+            observation: Some(obs(3, 1847)),
+        };
+        let j = f.to_json();
+        assert_eq!(j["verdict"]["verdict"], "verified");
+        assert_eq!(j["verdict"]["platform"], "tdx_v10");
+        assert_eq!(j["verdict"]["tcb_status"], "UpToDate");
+        assert_eq!(j["binding"]["kind"], "bound");
+        assert_eq!(j["observation"]["set_size"], 3);
+        assert_eq!(j["observation"]["total_sessions"], 1847);
+        assert!(j["observation"]["varying_attributes"]
+            .as_array()
+            .expect("varying_attributes is a JSON array")
+            .contains(&serde_json::json!("tee_tcb_svn")));
+    }
+
+    /// `binding`'s other arm and the reason it carries, so a swap of the two
+    /// `SessionBinding` variants — or a dropped `why` — doesn't hide behind
+    /// the `Bound` case above always being exercised.
+    #[test]
+    fn to_json_carries_an_unbound_reason() {
+        let f = Finding {
+            verdict: verified(),
+            binding: SessionBinding::Unbound {
+                why: "a captured quote is reusable",
+            },
+            observation: None,
+        };
+        let j = f.to_json();
+        assert_eq!(j["binding"]["kind"], "unbound");
+        assert_eq!(j["binding"]["why"], "a captured quote is reusable");
+        assert!(
+            j["observation"].is_null(),
+            "no observation must serialize as null, not be silently omitted or defaulted"
         );
     }
 
@@ -821,11 +1027,27 @@ mod tests {
         );
     }
 
+    /// Each platform recorded **in isolation**, one `Registry` per platform,
+    /// and the full series line pinned exactly. Recording all three
+    /// platforms into one shared registry and then checking that all three
+    /// label strings appear *somewhere* is not enough: a `TdxV15` ↔
+    /// `SgxEnclave` encoder swap is symmetric across that fixed set of
+    /// three, so the same three label strings would all still appear, just
+    /// each attached to the wrong platform — a shared-registry version of
+    /// this test stays green under exactly the mutation it exists to catch.
+    /// Isolating each platform's recording closes that: when `TdxV15` alone
+    /// is recorded under a swapped encoder, the buffer contains
+    /// `platform="sgx_enclave"` and never `platform="tdx_v15"`, which this
+    /// loop's own needle catches on that iteration.
     #[test]
     fn each_platform_variant_renders_its_own_distinct_label() {
-        let mut reg = Registry::default();
-        let m = Metrics::new(&mut reg);
-        for platform in [Platform::TdxV10, Platform::TdxV15, Platform::SgxEnclave] {
+        for (platform, label) in [
+            (Platform::TdxV10, "tdx_v10"),
+            (Platform::TdxV15, "tdx_v15"),
+            (Platform::SgxEnclave, "sgx_enclave"),
+        ] {
+            let mut reg = Registry::default();
+            let m = Metrics::new(&mut reg);
             m.record(&Finding {
                 verdict: QuoteVerdict::Verified {
                     platform,
@@ -836,11 +1058,113 @@ mod tests {
                 binding: SessionBinding::Bound,
                 observation: None,
             });
+            let mut buf = String::new();
+            prometheus_client::encoding::text::encode(&mut buf, &reg).unwrap();
+            let needle =
+                format!("gateway_quotes_total{{platform=\"{label}\",tcb_status=\"up_to_date\"}} 1");
+            assert!(
+                buf.contains(&needle),
+                "platform {platform:?} did not encode to its own label {needle}: {buf}"
+            );
+        }
+    }
+
+    /// Every `TcbStatusLabel` encoder arm, pinned to its exact rendered
+    /// string. The `classify` tests below only compare *enum values*
+    /// (`String -> variant`), so they say nothing about `variant -> label`
+    /// — a one-token edit, `TcbStatusLabel::Revoked => "up_to_date"`, graphs
+    /// a revoked platform as up to date and passes every other test in this
+    /// file. Recording all eight classifications under the *same* platform
+    /// and then requiring all eight distinct series lines to exist is what
+    /// catches that: the mutation collapses `Revoked` onto the `UpToDate`
+    /// series, so the `"revoked"` line simply never appears.
+    #[test]
+    fn every_tcb_status_encodes_to_its_own_exact_label() {
+        let mut reg = Registry::default();
+        let m = Metrics::new(&mut reg);
+        let statuses = [
+            ("UpToDate", "up_to_date"),
+            ("OutOfDate", "out_of_date"),
+            (
+                "OutOfDateConfigurationNeeded",
+                "out_of_date_configuration_needed",
+            ),
+            ("ConfigurationNeeded", "configuration_needed"),
+            (
+                "ConfigurationAndSWHardeningNeeded",
+                "configuration_and_sw_hardening_needed",
+            ),
+            ("SWHardeningNeeded", "sw_hardening_needed"),
+            ("Revoked", "revoked"),
+            ("SomeFutureDcapStatus", "other"),
+        ];
+        for (status, _) in statuses {
+            m.record(&Finding {
+                verdict: QuoteVerdict::Verified {
+                    platform: Platform::TdxV10,
+                    tcb_status: status.into(),
+                    advisories: vec![],
+                    config: TcbConfig::for_test(&[]),
+                },
+                binding: SessionBinding::Bound,
+                observation: None,
+            });
         }
         let mut buf = String::new();
         prometheus_client::encoding::text::encode(&mut buf, &reg).unwrap();
-        for label in ["tdx_v10", "tdx_v15", "sgx_enclave"] {
-            assert!(buf.contains(label), "missing platform label {label}: {buf}");
+        for (status, label) in statuses {
+            let needle = format!("tcb_status=\"{label}\"");
+            assert!(
+                buf.contains(&needle),
+                "status {status} did not encode to its own label {needle}: {buf}"
+            );
+        }
+    }
+
+    /// The `WhyKind` equivalent of the test above: every encoder arm, pinned
+    /// exactly, including the `Other` bucket.
+    #[test]
+    fn every_why_kind_encodes_to_its_own_exact_label() {
+        let mut reg = Registry::default();
+        let m = Metrics::new(&mut reg);
+        let whys = [
+            (
+                "no collateral cached for FMSPC aaaaaaaaaaaa yet",
+                "collateral_absent",
+            ),
+            (
+                "collateral for FMSPC aaaaaaaaaaaa is 900s old and past its TTL",
+                "collateral_stale",
+            ),
+            (
+                "could not reach the provisioning service at https://pccs.example: timed out",
+                "pcs_unreachable",
+            ),
+            (
+                "this platform is not supported by this gateway",
+                "unsupported_platform",
+            ),
+            (
+                "the system clock reads before the Unix epoch, so collateral \
+                 validity cannot be checked",
+                "other",
+            ),
+        ];
+        for (why, _) in whys {
+            m.record(&Finding {
+                verdict: QuoteVerdict::Unverified { why: why.into() },
+                binding: SessionBinding::Bound,
+                observation: None,
+            });
+        }
+        let mut buf = String::new();
+        prometheus_client::encoding::text::encode(&mut buf, &reg).unwrap();
+        for (why, label) in whys {
+            let needle = format!("why_kind=\"{label}\"");
+            assert!(
+                buf.contains(&needle),
+                "why {why:?} did not encode to its own label {needle}: {buf}"
+            );
         }
     }
 
@@ -914,12 +1238,146 @@ mod tests {
     }
 
     /// The real, current gap: `verify.rs`'s unreadable-clock message is
-    /// none of the four named causes. Copied verbatim from `verify_at` so a
-    /// rewording there is caught here rather than silently reclassified.
+    /// none of the four named causes. Copied verbatim from `verify_at` here,
+    /// and pinned against the *live source* by
+    /// `the_three_keywords_verify_rs_produces_still_appear_there` below — so
+    /// a rewording there is now actually caught here, not just documented as
+    /// if it were.
     #[test]
     fn an_unreadable_clock_reason_does_not_pretend_to_be_one_of_the_four_named_causes() {
         let why = "the system clock reads before the Unix epoch, so collateral \
                     validity cannot be checked";
         assert_eq!(WhyKind::classify(why), WhyKind::Other);
+    }
+
+    /// `verify.rs`'s own idiom (see its formatter-ban guard,
+    /// `the_verifier_hands_nothing_to_a_formatter_it_did_not_choose`)
+    /// applied to a different risk: `WhyKind::classify`'s keywords for the
+    /// three reasons `verify.rs` actually produces today
+    /// (`collateral_absent`, `collateral_stale`, and the unreadable-clock
+    /// `Other` case) are hand-copied prose, not derived from `verify.rs` in
+    /// any way the compiler checks. A rewording of any of the three phrases
+    /// below would silently degrade that bucket to `Other` with nothing
+    /// failing — except this test.
+    ///
+    /// Scanned against the **non-test** region only, split on the same
+    /// `#[cfg(test)]\nmod tests {` marker `verify.rs`'s own guard splits on.
+    /// A naive `include_str!("verify.rs").contains(phrase)` over the whole
+    /// file is close to vacuous here: `verify.rs`'s own tests assert
+    /// `why.contains("no collateral cached")` and a doc comment quotes
+    /// "past its TTL" verbatim, so the phrase keeps appearing in the file
+    /// even if the *production* `format!` string that generates it is
+    /// reworded — which is exactly what happened when this test was first
+    /// written this way, and it passed anyway. Restricting the search to
+    /// the region before the test module closes that gap.
+    /// `pcs_unreachable` and `unsupported_platform` are not covered here
+    /// because `verify.rs` does not produce either reason today; see
+    /// `every_why_kind_encodes_to_its_own_exact_label` and
+    /// `why_classification_covers_the_four_named_causes` for those, against
+    /// synthetic text.
+    #[test]
+    fn the_three_keywords_verify_rs_produces_still_appear_there() {
+        let src = include_str!("verify.rs");
+        const MARKER: &str = "#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            src.matches(MARKER).count(),
+            1,
+            "ambiguous test module boundary in verify.rs"
+        );
+        let non_test = src.split(MARKER).next().expect("split yields a head");
+        // The split itself has to actually reach the two functions that
+        // produce these phrases, or this guard would pass against a
+        // truncated string without ever having scanned anything real.
+        assert!(
+            non_test.contains("fn collateral_or_unverified") && non_test.contains("fn verify_at"),
+            "the scanned region does not reach verify.rs's implementation, \
+             so this guard would pass against a truncated string"
+        );
+        for phrase in [
+            "no collateral cached",
+            "past its TTL",
+            "the system clock reads before the Unix epoch",
+        ] {
+            assert!(
+                non_test.contains(phrase),
+                "the phrase {phrase:?} no longer appears in verify.rs's \
+                 production code; WhyKind::classify's keyword for it is now \
+                 unreachable and would silently misclassify a real \
+                 Unverified reason"
+            );
+        }
+    }
+
+    /// End-to-end proof for the two reasons `verify.rs` produces today,
+    /// through a real `QuoteVerifier` rather than a hand-copied string. This
+    /// is what `why_classification_covers_the_four_named_causes` cannot be:
+    /// that test's strings are typed by hand and could drift from
+    /// `verify.rs`'s actual wording without either test noticing. These two
+    /// call the real verifier and classify whatever `why` it actually
+    /// produces.
+    mod against_a_real_verifier {
+        use super::*;
+        use crate::gateway::collateral::CollateralCache;
+        use crate::gateway::source::RawAttestation;
+        use crate::gateway::verify::QuoteVerifier;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        /// Vendored real TDX quote, same fixture `verify.rs`'s own tests use
+        /// (Phala Network, MIT — see `tests/fixtures/PROVENANCE.txt`). Needed
+        /// only so `dcap_qvl::intel::quote_fmspc` succeeds and the verifier
+        /// reaches the cache lookup at all; its collateral is irrelevant to
+        /// the absent-cache case and is only decoded for the stale case.
+        fn real_tdx_quote() -> Vec<u8> {
+            include_bytes!("../../tests/fixtures/tdx-quote.bin").to_vec()
+        }
+
+        fn real_collateral() -> dcap_qvl::QuoteCollateralV3 {
+            serde_json::from_slice(include_bytes!(
+                "../../tests/fixtures/tdx-quote-collateral.json"
+            ))
+            .expect("the vendored collateral fixture decodes")
+        }
+
+        /// The fixture's FMSPC, exactly as `verify.rs` pins it under
+        /// `REAL_FMSPC_HEX` (private to that module, so re-stated here
+        /// rather than imported).
+        const REAL_FMSPC_HEX: &str = "b0c06f000000";
+
+        #[test]
+        fn an_empty_cache_classifies_as_collateral_absent() {
+            let verifier = QuoteVerifier::new(Arc::new(CollateralCache::new(
+                "https://pccs.invalid".into(),
+                Duration::from_secs(3600),
+            )));
+            let verdict = verifier.verify(&RawAttestation {
+                bytes: real_tdx_quote(),
+            });
+            let QuoteVerdict::Unverified { why } = verdict else {
+                panic!("expected Unverified against an empty cache, got {verdict:?}");
+            };
+            assert_eq!(WhyKind::classify(&why), WhyKind::CollateralAbsent);
+        }
+
+        #[test]
+        fn a_stale_cache_entry_classifies_as_collateral_stale() {
+            // Same technique as verify.rs's own `stale_collateral_is_unverified_never_verified`:
+            // a zero TTL plus a spin-wait past the insertion instant, so
+            // `age > ttl` is guaranteed without assuming any host uptime.
+            let cache = CollateralCache::new("https://pccs.invalid".into(), Duration::ZERO);
+            let fetched = Instant::now();
+            cache.insert_for_test(REAL_FMSPC_HEX, real_collateral(), fetched);
+            while Instant::now() <= fetched {
+                std::hint::spin_loop();
+            }
+            let verifier = QuoteVerifier::new(Arc::new(cache));
+            let verdict = verifier.verify(&RawAttestation {
+                bytes: real_tdx_quote(),
+            });
+            let QuoteVerdict::Unverified { why } = verdict else {
+                panic!("expected Unverified against a stale cache, got {verdict:?}");
+            };
+            assert_eq!(WhyKind::classify(&why), WhyKind::CollateralStale);
+        }
     }
 }

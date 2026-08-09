@@ -61,7 +61,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Which trusted-execution platform produced a quote.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+///
+/// Derives `Hash` so `finding.rs` can use it directly as a Prometheus label
+/// value's key (`Family`'s label set must be `Hash`) without a parallel
+/// mirror enum — one three-variant enum, not two kept in sync by hand.
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Platform {
     TdxV10,
