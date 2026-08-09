@@ -694,6 +694,7 @@ impl ComposedReport {
         out
     }
 
+    /// Keys sorted, explicitly — see [`crate::report::canonical_json`].
     pub fn to_json(&self) -> serde_json::Value {
         let rows = |rs: &[ComposedRow]| {
             rs.iter()
@@ -708,13 +709,13 @@ impl ComposedReport {
                 })
                 .collect::<Vec<_>>()
         };
-        serde_json::json!({
+        crate::report::canonical_json(serde_json::json!({
             "budget_us": crate::cost::BUDGET.as_secs_f64() * 1e6,
             "desk_study": rows(&self.desk_study),
             "measured": rows(&self.measured),
             "baseline_round_trip_us": self.baseline_round_trip.as_secs_f64() * 1e6,
             "measured_ratio_to_baseline": self.measured_ratio,
-        })
+        }))
     }
 }
 

@@ -587,8 +587,14 @@ impl BurstReport {
         out
     }
 
+    /// Keys sorted, explicitly. See [`crate::report::canonical_json`]:
+    /// `serde_json::Map` is only a `BTreeMap` when nothing in the dependency
+    /// graph turns on `preserve_order`, and something now does. This file is
+    /// read into `results/deterministic/`, which CI diffs.
     pub fn to_json(&self) -> serde_json::Value {
-        serde_json::to_value(self).expect("BurstReport is serializable")
+        crate::report::canonical_json(
+            serde_json::to_value(self).expect("BurstReport is serializable"),
+        )
     }
 }
 

@@ -5,6 +5,17 @@
 # published figures, a seeded simulation, and a partition of a fixed input
 # file. CI regenerates it and fails on a diff.
 #
+# That byte-identity depends on one thing that is not obvious and that this
+# script cannot enforce: the JSON writers sort their keys explicitly, through
+# src/report.rs::canonical_json. serde_json::Map is a BTreeMap only while
+# nothing in the dependency graph enables `preserve_order` — dcap-qvl does,
+# graph-wide, and the day it arrived every file under deterministic/ silently
+# changed its bytes (key order only; values identical) with nothing in this
+# repository touched. See results/README.md for the whole account. If a diff
+# ever appears here that is purely key order, that is the symptom, and the
+# fix is in the writers, never in this script and never by committing the
+# reordered files.
+#
 # results/measured/ is wall-clock timing and differs per host. CI regenerates
 # it and checks its schema and tool version, but cannot diff it: a build that
 # failed because the machine was 3% busier would train everyone to ignore CI.

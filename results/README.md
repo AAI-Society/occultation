@@ -10,6 +10,36 @@ figures, a seeded pool simulation, and a partition of a fixed fleet file. CI
 regenerates these and **fails on a diff**, so a stale number cannot outlive a
 code change.
 
+### Why the JSON writers sort their keys explicitly
+
+`src/report.rs::canonical_json` sorts every object's keys before the JSON is
+printed, and `AnonymityReport::to_json`, `BurstReport::to_json`,
+`Table::to_json`, `ComposedReport::to_json` and the two `*_origin` fields the
+`pool` subcommand injects afterwards all go through it. **This is not
+redundant, however much it looks it — do not delete it.**
+
+`serde_json::Map` is a `BTreeMap` *only while nothing in the dependency graph
+enables `preserve_order`*. For most of this crate's life nothing did, objects
+came out alphabetical for free, and "byte-identical on any host" appeared to
+hold. Then `dcap-qvl` was added for the gateway's quote verification; its
+manifest declares `serde_json` with `preserve_order`; Cargo unifies features
+graph-wide; and the map became an `IndexMap` for every crate here. Every file
+in this directory changed its bytes — struct-field order in place of
+alphabetical — with no commit in this repository touching them. The values
+were identical throughout. Nobody noticed for five commits, because nobody
+re-ran the regen.
+
+So the guarantee was never "byte-identical on any host". It was
+"byte-identical given this lockfile". Sorting explicitly is what makes the
+advertised claim true rather than incidental: the output is now the same with
+the feature on or off, and a future dependency cannot move these bytes again.
+
+Held by `report.rs::writers_sort_their_keys_whatever_serde_json_was_compiled_with`
+and `tests/acceptance.rs::every_writer_that_feeds_results_emits_sorted_keys`.
+Both detect which regime the build is in, because with `preserve_order` off
+every object sorts itself and a test that did not check would pass against a
+`canonical_json` that had been deleted.
+
 ## `measured/`
 
 Wall-clock timings from whatever machine last ran the script — see
