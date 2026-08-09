@@ -13,6 +13,40 @@ jobs:
       - run: cargo test --all-targets
 
       # ---------------------------------------------------------------
+      # The composed-cost ratio, which `cargo test` above cannot check.
+      #
+      # That step builds unoptimized, and the ratio divides an unoptimized
+      # pure-Rust Ed25519 by blst's C, which is optimized either way — so in
+      # debug it measures the toolchain, not the cryptography. It reads 4-6x on
+      # arm64 macOS and 0.7-0.9x on this runner, and the test carried a 2.0
+      # floor calibrated on the former, so it failed here on every run from the
+      # day it was written. It is now `#[ignore]`d in debug and asserted here,
+      # in release, where both sides are optimized and the measurement is of
+      # the cryptography.
+      # ---------------------------------------------------------------
+      - name: the composed-cost ratio, in release
+        shell: bash
+        run: |
+          # Written outside the checkout on purpose: a later step diffs the
+          # working tree, and a stray log in the repo root is a trap for it.
+          set -o pipefail
+          log="$(mktemp)"
+          # --nocapture so the measured ratio itself lands in the log. The
+          # assertion is a lower bound; only the printed figure shows whether
+          # the margin over that bound is healthy or eroding.
+          cargo test --release --lib bench::composed_tests -- --nocapture 2>&1 | tee "$log"
+
+          # A libtest filter that matches nothing exits 0, so a rename would
+          # turn this whole step into a vacuous green. Check the assertion ran.
+          if ! grep -q \
+            "the_measured_composed_cost_is_a_large_multiple_of_the_baseline \.\.\. ok" \
+            "$log"; then
+            echo "::error::the release ratio assertion did not run: the filter"
+            echo "::error::matched nothing, so this step proved nothing"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
       # The gateway's structural guards, duplicated from src/gateway/verify.rs.
       #
       # Deliberate duplication: these are the only checks that survive someone
