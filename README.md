@@ -11,6 +11,42 @@
 
 ---
 
+## Who this is for
+
+**A research instrument, not a library you add to an application.** It exists to
+answer an open question in the
+[Proof-of-Control Standard](https://github.com/AAI-Society/ov-poc-standard) —
+`C5.2`, which is marked `[WG-INPUT NEEDED]` — and its output is evidence for a
+specification decision.
+
+Two things a developer can do with it today:
+
+| | |
+| --- | --- |
+| **Decide whether to build it at all** | Before committing to anonymous credentials for an agent system, find out what they cost per action and what breaks under burst. That is `bench`, `pool` and `anonymity`, and it needs no deployment. |
+| **Measure what you already leak** | Put `occultation-gateway` in front of an agent-facing API and get per-request measurements of how identifiable your counterparties are. **No application code changes.** See [Fronting your own API](#fronting-your-own-api). |
+
+And what it is **not** for, stated plainly because the rest of this README is
+about the findings rather than the audience:
+
+- **It is not a security control.** The gateway forwards every request
+  unconditionally, by design, and cannot stop a misbehaving agent. That is a
+  guarantee, not a gap — see [It never rejects](#it-never-rejects).
+- **It does not give your agents unlinkable identity.** It measures the
+  linkability of what they already present. The BBS+ machinery this repository
+  costs out is *not* in the gateway's request path; the two halves do not meet
+  yet, and [Where the two halves meet](#where-the-two-halves-meet) says what it
+  would take.
+- **It is not an SDK.** There is a `lib` target and the modules are public, but
+  the supported surface is the two binaries, built from source as
+  [Try it](#try-it) shows. Nothing here is shaped or versioned for embedding.
+
+If you want the one-line version: **this tells you whether unlinkable agent
+identity is affordable and how much your current setup leaks — not how to
+obtain it.**
+
+---
+
 ## "Both halves fit the budget"
 
 A desk study costed anonymous credentials for autonomous agents against a
@@ -254,6 +290,67 @@ Three sentences on that output: the quote really was verified against Intel's
 chain; three sessions in this measurement window presented that exact platform
 configuration out of 1,847 total; and two attributes are doing the splitting.
 
+### Fronting your own API
+
+Three steps and no application code changes. It cannot reject a request, so it
+cannot turn a working agent into a rejected one.
+
+It is still a hop, though, and that is the honest caveat: **a process that never
+rejects a request is not the same as a process that cannot fail.** If the
+gateway dies, everything routed through it dies with it. Run it where you would
+run any other reverse proxy in front of an API you care about — supervised,
+health-checked, and with a way back to the upstream that does not go through it.
+
+**1. Put it in front of the API.** It forwards everything to `--upstream`, so
+this is transparent to both sides from the first request:
+
+```console
+$ occultation-gateway --listen 0.0.0.0:8080 \
+                      --upstream http://api.internal:3000 \
+                      --pccs-url https://pccs.example/sgx/certification/v4
+```
+
+`--upstream` is validated at startup and the process refuses to bind on a
+non-HTTP scheme, so a typo is an immediate error rather than a gateway that
+answers 100% of traffic with a synthesised 502.
+
+**2. Move your agents' base URL** from `api.internal:3000` to the gateway. If
+they send nothing else, this already works and already measures — the finding
+records that no attestation was presented, and the request is forwarded exactly
+as before.
+
+**3. Have agents present a quote** to get anything more than that. Base64 a TDX
+quote into `x-attestation` (rename with `--attestation-header`):
+
+```console
+$ curl -H "x-attestation: $(base64 < quote.bin | tr -d '\n')" https://gateway:8080/v1/task
+```
+
+Then read the meter:
+
+```console
+$ curl -s localhost:9469/metrics | grep gateway_
+```
+
+**What to expect on day one.** Almost certainly `gateway_unverified_total`
+climbing with `why_kind="collateral_absent"` — the collateral cache starts cold
+and fills in the background, off the request path. That is the system working.
+A *rising* `why_kind="other"` is the one to worry about: it means the reason
+classifier has drifted from the verifier's wording.
+
+**Two flags to set before production**, neither of which rejects anything:
+
+- `--max-connections` (default 1024) bounds descriptor use. Each proxied
+  connection costs one descriptor inbound and another to the upstream, so a
+  full burst wants roughly 2,100. **If you know your `ulimit -n`, set this to
+  somewhat under half of it.**
+- `--metrics-listen` defaults to loopback. Keep it there, or put it on an
+  interface your scraper can reach and nothing else can — the meter's output is
+  a description of your counterparties.
+
+What this does **not** do is covered next, and it is worth reading before you
+deploy it rather than after.
+
 ### It never rejects
 
 **Phase 1 has no `--enforce`, and it is not a flag someone forgot.** Every
@@ -479,6 +576,52 @@ mistake as rejecting a request over a bad quote.
 No `--enforce`, no RA-TLS, no credential verification, no BBS+ in the request
 path. Header transport, real quote verification, the meter, findings, metrics,
 and a hostile-agent fixture. `Unverified` is a gap we admit to, not a pass.
+
+### Where the two halves meet
+
+They do not, yet, and this is the most important thing to understand about the
+repository. There are two halves:
+
+| | measures | in |
+| --- | --- | --- |
+| `bench`, `pool` | what **BBS+ anonymous credentials** cost, and what breaks when the pool empties | a harness, offline |
+| `occultation-gateway` | what **TDX attestation** leaks about live counterparties | a request path |
+
+The first costs a way to be unlinkable. The second measures how linkable you
+currently are. **Nothing joins them:** the gateway verifies quotes, not
+credentials, and no BBS+ code runs in its request path.
+
+Four things stand between here and a gateway that actually carries unlinkable
+identity. They are named rather than scheduled — this is the shape of the gap,
+not a plan:
+
+1. **A presentation in the request path.** The gateway would verify a BBS+
+   presentation instead of, or beside, a raw quote. `bench --composed` says
+   only one composition fits 15 ms, and it is the one depending on a
+   pre-computation pool — so `pool`'s exhaustion behaviour stops being a
+   simulation and becomes a production failure mode. The stall is not a
+   detail; reuse is [unrecoverable](#what-that-turns-into).
+
+2. **Session binding.** Header transport does not bind a quote to the TLS
+   session, so a captured quote replays, and the gateway
+   [says so on every finding](#header-transport-does-not-bind-the-quote-to-the-session).
+   RA-TLS or an equivalent channel binding is a prerequisite for the
+   measurement to mean anything about *this* connection.
+
+3. **An identity profile that suspends `C5.1.1`.** The standard requires every
+   execution record to carry both an agent and a principal identifier. Under
+   unlinkability there is no persistent agent identifier to carry. This is not
+   an implementation gap that better engineering closes — it is a requirement a
+   profile must **suspend**, and the standard has no mechanism for that today.
+
+4. **A decision about enforcement.** `--enforce` does not exist, and adding it
+   would reverse the one guarantee this codebase is built around. That is a
+   design argument to have deliberately, not a flag to add.
+
+The honest summary: **the cost of unlinkability is measured, the leak is
+measured, and the bridge between them is unbuilt.** Anyone reading this as "put
+the gateway in front of your API and your agents become unlinkable" has read it
+backwards.
 
 ## How this maps to the standard
 
